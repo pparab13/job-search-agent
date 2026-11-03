@@ -93,6 +93,10 @@ NO_VISA_PATTERNS = [
     r"cannot sponsor", r"will not sponsor", r"do not sponsor", r"not eligible for sponsorship",
 ]
 
+# Most postings never mention visa sponsorship. With SHOW_UNCONFIRMED=1 the email also lists
+# strong skill matches abroad that do NOT mention sponsorship, in a clearly labelled section.
+SHOW_UNCONFIRMED = os.getenv("SHOW_UNCONFIRMED", "0") == "1"
+MAX_UNCONFIRMED_PER_COUNTRY = 5
 MIN_SKILL_MATCHES = 2          # drop jobs that match fewer than this many skills
 MAX_JOBS_PER_COUNTRY = 10
 DATE_POSTED = "3days"          # today | 3days | week | month  (dedupe handles repeats)
@@ -124,6 +128,7 @@ def fetch_jobs(query: str, country: str, location: str, creds: dict) -> list[dic
 
 
 def analyse(job: dict, needs_visa: bool):
+    """Returns a dict if the job passes, otherwise a short string saying why it was dropped."""
     text = " ".join(
         str(x or "") for x in (
             job.get("job_title"), job.get("job_description"),
@@ -134,27 +139,30 @@ def analyse(job: dict, needs_visa: bool):
 
     title = (job.get("job_title") or "").lower()
     if "azure" not in text and "cloud" not in title:
-        return None
+        return "not_azure"
     if not any(k in title for k in ("architect", "principal", "lead", "consultant")):
-        return None
+        return "title"
     if any(k in title for k in ("junior", "intern", "graduate", "trainee", "entry level")):
-        return None      # you have 12+ years; skip junior titles
+        return "title"
 
     matched = sorted({s for s in SKILLS if re.search(rf"(?<![a-z]){re.escape(s)}", text)})
     if len(matched) < MIN_SKILL_MATCHES:
-        return None
+        return "skills"
 
-    visa_signal = ""
+    visa_signal, unconfirmed = "", False
     if needs_visa:
         if any(re.search(p, text) for p in NO_VISA_PATTERNS):
-            return None
+            return "visa_negative"
         hit = next((p for p in VISA_PATTERNS if re.search(p, text)), None)
-        if not hit:
-            return None
-        m = re.search(hit, text)
-        visa_signal = text[max(0, m.start() - 60): m.end() + 80].replace("\n", " ").strip()
+        if hit:
+            m = re.search(hit, text)
+            visa_signal = text[max(0, m.start() - 60): m.end() + 80].replace("\n", " ").strip()
+        elif SHOW_UNCONFIRMED:
+            unconfirmed = True
+        else:
+            return "no_visa_mention"
 
-    return {"matched": matched, "visa_signal": visa_signal}
+    return {"matched": matched, "visa_signal": visa_signal, "unconfirmed": unconfirmed}
 
 
 def todays_queries() -> list[str]:
@@ -189,7 +197,7 @@ def save_seen(seen: dict) -> None:
     SEEN_FILE.write_text(json.dumps(seen))
 
 
-def build_email(results: dict, errors: list[str]) -> tuple[str, str]:
+def build_email(results: dict, errors: list[str], stats: dict | None = None) -> tuple[str, str]:
     today = datetime.now(IST).strftime("%a %d %b %Y")
     total = sum(len(v) for v in results.values())
     subject = f"Azure Architect jobs - {total} new ({today})"
@@ -201,6 +209,13 @@ def build_email(results: dict, errors: list[str]) -> tuple[str, str]:
     ]
     for label, jobs in results.items():
         parts.append(f"<h3 style='border-bottom:1px solid #ddd;padding-bottom:4px'>{label} ({len(jobs)})</h3>")
+        if stats and label in stats:
+            st = stats[label]
+            parts.append(
+                "<p style='color:#888;font-size:12px;margin:0 0 6px'>Search funnel: "
+                f"fetched {st['fetched']} &rarr; Azure architect-type titles {st['title_ok']} "
+                f"&rarr; enough resume skills {st['skills_ok']} &rarr; passed visa rule {st['visa_ok']} "
+                f"(already sent before: {st['seen']})</p>")
         if not jobs:
             parts.append("<p style='color:#888'>No new matches today.</p>")
         for j in jobs:
@@ -212,6 +227,8 @@ def build_email(results: dict, errors: list[str]) -> tuple[str, str]:
                 f"<span>{job.get('employer_name')} &middot; {loc} &middot; via {job.get('job_publisher') or 'web'}</span><br>"
                 f"<span style='color:#0a6'>Skills matched ({len(a['matched'])}): {', '.join(a['matched'][:10])}</span>"
             )
+            if a.get("unconfirmed"):
+                parts.append("<br><span style='color:#b60'><i>Sponsorship not mentioned in the posting - check with the recruiter.</i></span>")
             if a["visa_signal"]:
                 parts.append(f"<br><span style='color:#555'><i>Visa/relocation note:</i> ...{a['visa_signal']}...</span>")
             parts.append("</div>")
@@ -240,8 +257,10 @@ def main() -> int:
     seen, now = load_seen(), datetime.now(IST).isoformat()
     results, errors = {}, []
 
+    stats = {}
     for label, cc, loc, needs_visa in TARGETS:
         collected, ids = [], set()
+        st = {"fetched": 0, "title_ok": 0, "skills_ok": 0, "visa_ok": 0, "seen": 0}
         for q in todays_queries():
             try:
                 jobs = fetch_jobs(q, cc, loc, creds)
@@ -250,18 +269,36 @@ def main() -> int:
                 continue
             for job in jobs:
                 jid = job_id(job)
-                if jid in seen or jid in ids:
+                if jid in ids:
+                    continue
+                st["fetched"] += 1
+                if jid in seen:
+                    st["seen"] += 1
                     continue
                 a = analyse(job, needs_visa)
-                if a:
-                    ids.add(jid)
-                    collected.append({"job": job, "analysis": a})
-        collected.sort(key=lambda x: len(x["analysis"]["matched"]), reverse=True)
-        results[label] = collected[:MAX_JOBS_PER_COUNTRY]
+                if isinstance(a, str):
+                    if a in ("skills", "visa_negative", "no_visa_mention"):
+                        st["title_ok"] += 1
+                    if a in ("visa_negative", "no_visa_mention"):
+                        st["skills_ok"] += 1
+                    continue
+                st["title_ok"] += 1
+                st["skills_ok"] += 1
+                if not a["unconfirmed"]:
+                    st["visa_ok"] += 1
+                ids.add(jid)
+                collected.append({"job": job, "analysis": a})
+        confirmed = [c for c in collected if not c["analysis"]["unconfirmed"]]
+        unconf = [c for c in collected if c["analysis"]["unconfirmed"]][:MAX_UNCONFIRMED_PER_COUNTRY]
+        key = lambda x: len(x["analysis"]["matched"])
+        confirmed.sort(key=key, reverse=True)
+        unconf.sort(key=key, reverse=True)
+        results[label] = (confirmed + unconf)[:MAX_JOBS_PER_COUNTRY]
+        stats[label] = st
         for c in results[label]:
             seen[job_id(c["job"])] = now
 
-    subject, html = build_email(results, errors)
+    subject, html = build_email(results, errors, stats)
     subject += f" | search: {', '.join(todays_queries())}"
     if os.getenv("DRY_RUN"):
         Path("preview.html").write_text(html)
