@@ -22,6 +22,7 @@ import smtplib
 import ssl
 from urllib.parse import quote_plus
 import sys
+import time
 from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -113,6 +114,23 @@ OWN_URL = "https://api.openwebninja.com/jsearch/search"
 
 
 # ----------------------------------------------------------------------------
+def http_get(url: str, retries: int = 2, timeout: int = 50, **kw) -> requests.Response:
+    """GET with retries: slow APIs (timeouts) and temporary 429/5xx errors are retried with a short pause."""
+    last = None
+    for i in range(retries + 1):
+        try:
+            r = requests.get(url, timeout=timeout, **kw)
+            if r.status_code in (429, 500, 502, 503, 504) and i < retries:
+                time.sleep(4 * (i + 1))
+                continue
+            return r
+        except (requests.Timeout, requests.ConnectionError) as e:
+            last = e
+            if i < retries:
+                time.sleep(4 * (i + 1))
+    raise last
+
+
 def fetch_jobs(query: str, country: str, location: str, creds: dict) -> list[dict]:
     params = {
         "query": f"{query} in {location}",
@@ -126,7 +144,7 @@ def fetch_jobs(query: str, country: str, location: str, creds: dict) -> list[dic
     else:                                    # RapidAPI marketplace
         url = f"https://{API_HOST}/search"
         headers = {"X-RapidAPI-Key": creds["rapid"], "X-RapidAPI-Host": API_HOST}
-    r = requests.get(url, headers=headers, params=params, timeout=40)
+    r = http_get(url, headers=headers, params=params)
     if not r.ok:
         raise RuntimeError(f"HTTP {r.status_code} from {url.split('/')[2]}: {r.text[:160]}")
     return r.json().get("data", []) or []
@@ -141,7 +159,7 @@ def fetch_adzuna(query: str, country: str, location: str, app_id: str, app_key: 
               "max_days_old": 3, "sort_by": "date", "content-type": "application/json"}
     if country == "in":
         params["where"] = "Mumbai"
-    r = requests.get(f"https://api.adzuna.com/v1/api/jobs/{country}/search/1", params=params, timeout=40)
+    r = http_get(f"https://api.adzuna.com/v1/api/jobs/{country}/search/1", params=params)
     if not r.ok:
         raise RuntimeError(f"Adzuna HTTP {r.status_code}: {r.text[:120]}")
     clean = lambda t: re.sub(r"<[^>]+>", "", t or "")
@@ -163,12 +181,15 @@ def fetch_adzuna(query: str, country: str, location: str, app_id: str, app_key: 
 
 def fetch_serpapi(query: str, country: str, location: str, key: str) -> list[dict]:
     """Google Jobs results via SerpApi, converted to the same shape as JSearch jobs."""
-    r = requests.get(
-        "https://serpapi.com/search.json",
-        params={"engine": "google_jobs", "q": f"{query} jobs in {location}",
-                "gl": country, "hl": "en", "api_key": key},
-        timeout=60,
-    )
+    params = {"engine": "google_jobs", "q": f"{query} jobs in {location}",
+              "gl": country, "hl": "en", "api_key": key}
+    for _ in range(2):
+        r = http_get("https://serpapi.com/search.json", params=params, timeout=60)
+        err = (r.json() if r.content else {}).get("error", "") if r.headers.get("content-type", "").startswith("application/json") else ""
+        if "gl parameter" in err and "gl" in params:
+            params.pop("gl")          # SerpApi rejects some country codes (e.g. ie, au); the location in q still applies
+            continue
+        break
     data = r.json() if r.content else {}
     if data.get("error") and not data.get("jobs_results"):
         if "hasn't returned any results" in data["error"]:
@@ -390,14 +411,14 @@ def badge(score: int) -> str:
             f"font-size:12px;font-weight:600;white-space:nowrap'>{label}</span>")
 
 
-def render_job(j: dict) -> str:
+def render_job(j: dict, show_country: bool = False) -> str:
     job, a = j["job"], j["analysis"]
     loc = ", ".join(x for x in (job.get("job_city"), job.get("job_state"), job.get("job_country")) if x)
     main_link, alt_links = apply_links(job)
     h = (
         "<div style='margin:0 0 14px'>"
         f"<a href='{main_link}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a> {badge(a['score'])}<br>"
-        f"<span>{job.get('employer_name')} &middot; {loc} &middot; via {job.get('job_publisher') or 'web'}</span><br>"
+        f"<span>{('<b>' + j['label'] + '</b> &middot; ') if show_country and j.get('label') else ''}{job.get('employer_name')} &middot; {loc} &middot; via {job.get('job_publisher') or 'web'}</span><br>"
         f"<span style='color:#0a6'>Skills matched ({len(a['matched'])}): {', '.join(a['matched'][:10]) or 'none found in the text'}</span>"
     )
     h += f"<br><span style='font-size:11px;color:#999'>Score: {a['breakdown']}</span>"
@@ -436,10 +457,12 @@ def build_email(results: dict, errors: list[str], stats: dict | None = None,
     if best:
         parts.append("<h3 style='border-bottom:2px solid #0a7d32;padding-bottom:4px;color:#0a7d32'>"
                      f"Best matches ({BEST_SCORE}+)</h3>")
-        parts.extend(render_job(j) for j in best)
+        parts.extend(render_job(j, True) for j in best)
     for label, jobs in results.items():
         extra = (others or {}).get(label, [])
-        parts.append(f"<h3 style='border-bottom:1px solid #ddd;padding-bottom:4px'>{label} ({len(jobs)} best + {len(extra)} more)</h3>")
+        bc = sum(1 for j in best if j.get("label") == label)
+        parts.append(f"<h3 style='border-bottom:1px solid #ddd;padding-bottom:4px'>{label} "
+                     f"({bc} in Best matches above, {len(jobs)} other good, {len(extra)} more)</h3>")
         if stats and label in stats:
             st = stats[label]
             parts.append(
@@ -448,7 +471,7 @@ def build_email(results: dict, errors: list[str], stats: dict | None = None,
                 f"&rarr; enough resume skills {st['skills_ok']} &rarr; passed visa rule {st['visa_ok']} "
                 f"(already sent before: {st['seen']})</p>")
         if not jobs:
-            parts.append("<p style='color:#888'>No new best matches today.</p>")
+            parts.append("<p style='color:#888'>" + ("This country's top jobs are listed under Best matches above." if bc else "No new good matches today.") + "</p>")
         parts.extend(render_job(j) for j in jobs)
         if extra:
             parts.append("<p style='margin:10px 0 6px;font-weight:600;color:#333'>More Azure architect roles from Google Jobs "
@@ -478,7 +501,9 @@ def main() -> int:
     serp_key = os.getenv("SERPAPI_KEY")
     if not (creds["own"] or creds["rapid"] or serp_key or os.getenv("ADZUNA_APP_ID")):
         sys.exit("Missing API key: set OPENWEBNINJA_API_KEY (or RAPIDAPI_KEY, SERPAPI_KEY or ADZUNA_APP_ID/ADZUNA_APP_KEY) as a GitHub secret.")
-    seen, now = load_seen(), datetime.now(IST).isoformat()
+    # IGNORE_SEEN=true (manual "Run workflow" checkbox) re-sends jobs that were already emailed
+    seen = {} if os.getenv("IGNORE_SEEN", "").lower() == "true" else load_seen()
+    now = datetime.now(IST).isoformat()
     results, others, stats, errors = {}, {}, {}, []
     failed_countries = 0
 
@@ -546,6 +571,7 @@ def main() -> int:
         others[label] = extra[:OTHERS_PER_COUNTRY]
         stats[label] = st
         for c in results[label] + others[label]:
+            c["label"] = label
             seen[job_id(c["job"])] = now
             seen[dedupe_key(c["job"])] = now
 
