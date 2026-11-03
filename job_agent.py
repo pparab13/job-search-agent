@@ -9,6 +9,8 @@ removes jobs already emailed before, and emails you an HTML digest.
 Env vars (set as GitHub Actions secrets or in a local .env export):
   OPENWEBNINJA_API_KEY - JSearch key from app.openwebninja.com (recommended, used if set)
   RAPIDAPI_KEY         - OR a RapidAPI key subscribed to "JSearch" (fallback)
+  SERPAPI_KEY          - OPTIONAL: SerpApi key; adds the exact Google Jobs results as a second source
+  ADZUNA_APP_ID / ADZUNA_APP_KEY - OPTIONAL: free Adzuna API keys; adds Adzuna listings (UK, DE, NL, CA, AU, India)
   SMTP_USER      - sender Gmail address
   SMTP_PASS      - Gmail App Password (not your normal password)
   MAIL_TO        - where to send the digest (defaults to SMTP_USER)
@@ -100,6 +102,7 @@ SHOW_UNCONFIRMED = os.getenv("SHOW_UNCONFIRMED", "0") == "1"
 MAX_UNCONFIRMED_PER_COUNTRY = 5
 MIN_SKILL_MATCHES = 2          # drop jobs that match fewer than this many skills
 MAX_JOBS_PER_COUNTRY = 10
+OTHERS_PER_COUNTRY = 8          # looser matches shown in a separate 'more roles' section
 DATE_POSTED = "3days"          # today | 3days | week | month  (dedupe handles repeats)
 SEEN_FILE = Path(os.getenv("SEEN_FILE", "seen_jobs.json"))
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -128,15 +131,98 @@ def fetch_jobs(query: str, country: str, location: str, creds: dict) -> list[dic
     return r.json().get("data", []) or []
 
 
-def analyse(job: dict, needs_visa: bool):
-    """Returns a dict if the job passes, otherwise a short string saying why it was dropped."""
-    text = " ".join(
+ADZUNA_COUNTRIES = {"in", "gb", "de", "nl", "ca", "au"}     # Adzuna has no Ireland / UAE site
+
+
+def fetch_adzuna(query: str, country: str, location: str, app_id: str, app_key: str) -> list[dict]:
+    """Adzuna listings converted to the same shape as JSearch jobs."""
+    params = {"app_id": app_id, "app_key": app_key, "what": query, "results_per_page": 20,
+              "max_days_old": 3, "sort_by": "date", "content-type": "application/json"}
+    if country == "in":
+        params["where"] = "Mumbai"
+    r = requests.get(f"https://api.adzuna.com/v1/api/jobs/{country}/search/1", params=params, timeout=40)
+    if not r.ok:
+        raise RuntimeError(f"Adzuna HTTP {r.status_code}: {r.text[:120]}")
+    clean = lambda t: re.sub(r"<[^>]+>", "", t or "")
+    jobs = []
+    for it in r.json().get("results", []) or []:
+        link = it.get("redirect_url")
+        jobs.append({
+            "job_id": f"adzuna-{it.get('id')}",
+            "job_title": clean(it.get("title")),
+            "employer_name": (it.get("company") or {}).get("display_name"),
+            "job_city": (it.get("location") or {}).get("display_name"),
+            "job_description": clean(it.get("description")),
+            "job_publisher": "Adzuna",
+            "job_apply_link": link,
+            "apply_options": [{"publisher": "Adzuna", "apply_link": link, "is_direct": False}],
+        })
+    return jobs
+
+
+def fetch_serpapi(query: str, country: str, location: str, key: str) -> list[dict]:
+    """Google Jobs results via SerpApi, converted to the same shape as JSearch jobs."""
+    r = requests.get(
+        "https://serpapi.com/search.json",
+        params={"engine": "google_jobs", "q": f"{query} jobs in {location}",
+                "gl": country, "hl": "en", "api_key": key},
+        timeout=60,
+    )
+    data = r.json() if r.content else {}
+    if data.get("error") and not data.get("jobs_results"):
+        if "hasn't returned any results" in data["error"]:
+            return []
+        raise RuntimeError(f"SerpApi: {data['error'][:160]}")
+    if not r.ok:
+        raise RuntimeError(f"SerpApi HTTP {r.status_code}")
+    jobs = []
+    for it in data.get("jobs_results", []) or []:
+        hl = {b.get("title", ""): b.get("items", []) for b in (it.get("job_highlights") or [])}
+        opts = []
+        for o in it.get("apply_options") or []:
+            t = (o.get("title") or "")
+            opts.append({"publisher": re.sub(r"^Apply (directly )?on ", "", t),
+                         "apply_link": o.get("link"), "is_direct": "directly" in t.lower()})
+        jobs.append({
+            "job_id": it.get("job_id"),
+            "job_title": it.get("title"),
+            "employer_name": it.get("company_name"),
+            "job_city": it.get("location"),
+            "job_description": it.get("description"),
+            "job_highlights": {"Qualifications": hl.get("Qualifications", []), "Benefits": hl.get("Benefits", [])},
+            "job_publisher": (it.get("via") or "").replace("via ", ""),
+            "job_apply_link": (opts[0]["apply_link"] if opts else None) or it.get("share_link"),
+            "apply_options": opts,
+            "job_google_link": it.get("share_link"),
+        })
+    return jobs
+
+
+def job_text(job: dict) -> str:
+    return " ".join(
         str(x or "") for x in (
             job.get("job_title"), job.get("job_description"),
             " ".join((job.get("job_highlights") or {}).get("Qualifications", []) or []),
             " ".join((job.get("job_highlights") or {}).get("Benefits", []) or []),
         )
     ).lower()
+
+
+def match_skills(text: str) -> list[str]:
+    return sorted({s for s in SKILLS if re.search(rf"(?<![a-z]){re.escape(s)}", text)})
+
+
+def visa_snippet(text: str) -> str:
+    hit = next((p for p in VISA_PATTERNS if re.search(p, text)), None)
+    if not hit:
+        return ""
+    m = re.search(hit, text)
+    return text[max(0, m.start() - 60): m.end() + 80].replace("\n", " ").strip()
+
+
+def analyse(job: dict, needs_visa: bool):
+    """Returns a dict if the job passes, otherwise a short string saying why it was dropped."""
+    text = job_text(job)
 
     title = (job.get("job_title") or "").lower()
     if "azure" not in text and "cloud" not in title:
@@ -146,7 +232,7 @@ def analyse(job: dict, needs_visa: bool):
     if any(k in title for k in ("junior", "intern", "graduate", "trainee", "entry level")):
         return "title"
 
-    matched = sorted({s for s in SKILLS if re.search(rf"(?<![a-z]){re.escape(s)}", text)})
+    matched = match_skills(text)
     if len(matched) < MIN_SKILL_MATCHES:
         return "skills"
 
@@ -183,6 +269,10 @@ def todays_queries() -> list[str]:
 
 def job_id(job: dict) -> str:
     return job.get("job_id") or job.get("job_apply_link") or job.get("job_title", "")
+
+
+def dedupe_key(job: dict) -> str:
+    return re.sub(r"\W+", "", f"{job.get('job_title')}|{job.get('employer_name')}".lower())
 
 
 def load_seen() -> dict:
@@ -245,18 +335,39 @@ def apply_links(job: dict) -> tuple[str, str]:
     return main, " &middot; ".join(alts)
 
 
-def build_email(results: dict, errors: list[str], stats: dict | None = None) -> tuple[str, str]:
+def render_job(j: dict) -> str:
+    job, a = j["job"], j["analysis"]
+    loc = ", ".join(x for x in (job.get("job_city"), job.get("job_state"), job.get("job_country")) if x)
+    main_link, alt_links = apply_links(job)
+    h = (
+        "<div style='margin:0 0 14px'>"
+        f"<a href='{main_link}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a><br>"
+        f"<span>{job.get('employer_name')} &middot; {loc} &middot; via {job.get('job_publisher') or 'web'}</span><br>"
+        f"<span style='color:#0a6'>Skills matched ({len(a['matched'])}): {', '.join(a['matched'][:10]) or 'none found in the text'}</span>"
+    )
+    if a.get("unconfirmed"):
+        h += "<br><span style='color:#b60'><i>Sponsorship not mentioned in the posting - check with the recruiter.</i></span>"
+    if a["visa_signal"]:
+        h += f"<br><span style='color:#555'><i>Visa/relocation note:</i> ...{a['visa_signal']}...</span>"
+    h += f"<br><span style='font-size:12px;color:#555'>Link blocked or \"not available in your country\"? Try: {alt_links}</span></div>"
+    return h
+
+
+def build_email(results: dict, errors: list[str], stats: dict | None = None,
+                others: dict | None = None) -> tuple[str, str]:
     today = datetime.now(IST).strftime("%a %d %b %Y")
     total = sum(len(v) for v in results.values())
-    subject = f"Azure Architect jobs - {total} new ({today})"
+    total_other = sum(len(v) for v in (others or {}).values())
+    subject = f"Azure Architect jobs - {total} new" + (f" + {total_other} more" if total_other else "") + f" ({today})"
 
     parts = [
         "<div style='font-family:Segoe UI,Arial,sans-serif;max-width:760px'>",
         f"<h2>Azure Solution Architect jobs - {today}</h2>",
-        f"<p>{total} new matching roles. Abroad roles mention visa sponsorship / relocation; ranked by resume-skill match.</p>",
+        f"<p>{total} best matches (resume skills + visa/relocation rule) and {total_other} more Azure architect roles below them.</p>",
     ]
     for label, jobs in results.items():
-        parts.append(f"<h3 style='border-bottom:1px solid #ddd;padding-bottom:4px'>{label} ({len(jobs)})</h3>")
+        extra = (others or {}).get(label, [])
+        parts.append(f"<h3 style='border-bottom:1px solid #ddd;padding-bottom:4px'>{label} ({len(jobs)} best + {len(extra)} more)</h3>")
         if stats and label in stats:
             st = stats[label]
             parts.append(
@@ -265,23 +376,12 @@ def build_email(results: dict, errors: list[str], stats: dict | None = None) -> 
                 f"&rarr; enough resume skills {st['skills_ok']} &rarr; passed visa rule {st['visa_ok']} "
                 f"(already sent before: {st['seen']})</p>")
         if not jobs:
-            parts.append("<p style='color:#888'>No new matches today.</p>")
-        for j in jobs:
-            job, a = j["job"], j["analysis"]
-            loc = ", ".join(x for x in (job.get("job_city"), job.get("job_state"), job.get("job_country")) if x)
-            main_link, alt_links = apply_links(job)
-            parts.append(
-                "<div style='margin:0 0 14px'>"
-                f"<a href='{main_link}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a><br>"
-                f"<span>{job.get('employer_name')} &middot; {loc} &middot; via {job.get('job_publisher') or 'web'}</span><br>"
-                f"<span style='color:#0a6'>Skills matched ({len(a['matched'])}): {', '.join(a['matched'][:10])}</span>"
-            )
-            if a.get("unconfirmed"):
-                parts.append("<br><span style='color:#b60'><i>Sponsorship not mentioned in the posting - check with the recruiter.</i></span>")
-            if a["visa_signal"]:
-                parts.append(f"<br><span style='color:#555'><i>Visa/relocation note:</i> ...{a['visa_signal']}...</span>")
-            parts.append(f"<br><span style='font-size:12px;color:#555'>Link blocked or \"not available in your country\"? Try: {alt_links}</span>")
-            parts.append("</div>")
+            parts.append("<p style='color:#888'>No new best matches today.</p>")
+        parts.extend(render_job(j) for j in jobs)
+        if extra:
+            parts.append("<p style='margin:10px 0 6px;font-weight:600;color:#333'>More Azure architect roles from Google Jobs "
+                         "<span style='font-weight:400;color:#777'>(fewer resume skills in the text, or sponsorship not mentioned)</span></p>")
+            parts.extend(render_job(j) for j in extra)
         parts.append(job_board_links(label))
     if errors:
         parts.append("<p style='color:#b00'>Issues: " + "; ".join(errors) + "</p>")
@@ -303,27 +403,40 @@ def send_email(subject: str, html: str) -> None:
 
 def main() -> int:
     creds = {"own": os.getenv("OPENWEBNINJA_API_KEY"), "rapid": os.getenv("RAPIDAPI_KEY")}
-    if not (creds["own"] or creds["rapid"]):
-        sys.exit("Missing API key: set OPENWEBNINJA_API_KEY (or RAPIDAPI_KEY) as a GitHub secret.")
+    serp_key = os.getenv("SERPAPI_KEY")
+    if not (creds["own"] or creds["rapid"] or serp_key or os.getenv("ADZUNA_APP_ID")):
+        sys.exit("Missing API key: set OPENWEBNINJA_API_KEY (or RAPIDAPI_KEY, SERPAPI_KEY or ADZUNA_APP_ID/ADZUNA_APP_KEY) as a GitHub secret.")
     seen, now = load_seen(), datetime.now(IST).isoformat()
-    results, errors = {}, []
+    results, others, stats, errors = {}, {}, {}, []
+    failed_countries = 0
 
-    stats = {}
     for label, cc, loc, needs_visa in TARGETS:
-        collected, ids = [], set()
+        collected, extra, ids = [], [], set()
         st = {"fetched": 0, "title_ok": 0, "skills_ok": 0, "visa_ok": 0, "seen": 0}
+        sources_ok = 0
         for q in todays_queries():
-            try:
-                jobs = fetch_jobs(q, cc, loc, creds)
-            except Exception as e:
-                errors.append(f"{label}: {e}")
-                continue
+            fetchers = []
+            if creds["own"] or creds["rapid"]:
+                fetchers.append(("JSearch", lambda: fetch_jobs(q, cc, loc, creds)))
+            if serp_key:
+                fetchers.append(("Google Jobs (SerpApi)", lambda: fetch_serpapi(q, cc, loc, serp_key)))
+            if os.getenv("ADZUNA_APP_ID") and os.getenv("ADZUNA_APP_KEY") and cc in ADZUNA_COUNTRIES:
+                fetchers.append(("Adzuna", lambda: fetch_adzuna(
+                    q, cc, loc, os.environ["ADZUNA_APP_ID"], os.environ["ADZUNA_APP_KEY"])))
+            jobs = []
+            for name, fn in fetchers:
+                try:
+                    jobs += fn()
+                    sources_ok += 1
+                except Exception as e:
+                    errors.append(f"{label} [{name}]: {e}")
             for job in jobs:
-                jid = job_id(job)
-                if jid in ids:
+                jid, dk = job_id(job), dedupe_key(job)
+                if jid in ids or dk in ids:
                     continue
+                ids.update((jid, dk))
                 st["fetched"] += 1
-                if jid in seen:
+                if jid in seen or dk in seen:
                     st["seen"] += 1
                     continue
                 a = analyse(job, needs_visa)
@@ -332,24 +445,36 @@ def main() -> int:
                         st["title_ok"] += 1
                     if a in ("visa_negative", "no_visa_mention"):
                         st["skills_ok"] += 1
+                    if a in ("skills", "no_visa_mention"):      # architect role, just a looser match
+                        text = job_text(job)
+                        snippet = visa_snippet(text) if needs_visa else ""
+                        if needs_visa and any(re.search(p, text) for p in NO_VISA_PATTERNS):
+                            continue
+                        extra.append({"job": job, "analysis": {
+                            "matched": match_skills(text), "visa_signal": snippet,
+                            "unconfirmed": needs_visa and not snippet}})
                     continue
                 st["title_ok"] += 1
                 st["skills_ok"] += 1
                 if not a["unconfirmed"]:
                     st["visa_ok"] += 1
-                ids.add(jid)
                 collected.append({"job": job, "analysis": a})
+        if sources_ok == 0:
+            failed_countries += 1
         confirmed = [c for c in collected if not c["analysis"]["unconfirmed"]]
         unconf = [c for c in collected if c["analysis"]["unconfirmed"]][:MAX_UNCONFIRMED_PER_COUNTRY]
         key = lambda x: len(x["analysis"]["matched"])
         confirmed.sort(key=key, reverse=True)
         unconf.sort(key=key, reverse=True)
+        extra.sort(key=key, reverse=True)
         results[label] = (confirmed + unconf)[:MAX_JOBS_PER_COUNTRY]
+        others[label] = extra[:OTHERS_PER_COUNTRY]
         stats[label] = st
-        for c in results[label]:
+        for c in results[label] + others[label]:
             seen[job_id(c["job"])] = now
+            seen[dedupe_key(c["job"])] = now
 
-    subject, html = build_email(results, errors, stats)
+    subject, html = build_email(results, errors, stats, others)
     subject += f" | search: {', '.join(todays_queries())}"
     if os.getenv("DRY_RUN"):
         Path("preview.html").write_text(html)
@@ -358,8 +483,8 @@ def main() -> int:
         send_email(subject, html)
         print("Sent:", subject)
     save_seen(seen)
-    if len(errors) == len(TARGETS):
-        print("All searches failed:", errors[0])
+    if failed_countries == len(TARGETS):
+        print("All searches failed:", errors[0] if errors else "unknown")
         return 1
     return 0
 
