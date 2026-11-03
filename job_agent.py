@@ -102,6 +102,7 @@ SHOW_UNCONFIRMED = os.getenv("SHOW_UNCONFIRMED", "0") == "1"
 MAX_UNCONFIRMED_PER_COUNTRY = 5
 MIN_SKILL_MATCHES = 2          # drop jobs that match fewer than this many skills
 MAX_JOBS_PER_COUNTRY = 10
+BEST_SCORE = int(os.getenv("BEST_SCORE", "88"))   # match score at or above this = "best match"
 OTHERS_PER_COUNTRY = 8          # looser matches shown in a separate 'more roles' section
 DATE_POSTED = "3days"          # today | 3days | week | month  (dedupe handles repeats)
 SEEN_FILE = Path(os.getenv("SEEN_FILE", "seen_jobs.json"))
@@ -252,6 +253,53 @@ def analyse(job: dict, needs_visa: bool):
     return {"matched": matched, "visa_signal": visa_signal, "unconfirmed": unconfirmed}
 
 
+# Skills that matter most for you count double in the match score
+CORE_SKILLS = {
+    "landing zone", "cloud adoption framework", "well-architected", "azure policy", "management group",
+    "rbac", "terraform", "aks", "expressroute", "virtual wan", "private link", "azure migrate",
+    "site recovery", "azure devops", "powershell", "arm template", "vpn gateway", "hub and spoke",
+    "hld", "lld", "defender for cloud",
+}
+
+
+def score_job(job: dict, analysis: dict, needs_visa: bool) -> dict:
+    """Match score out of 100: resume skills 55 + title fit 20 + visa/relocation 15 + experience fit 10."""
+    title = (job.get("job_title") or "").lower()
+    text = job_text(job)
+
+    weighted = sum(2 if m in CORE_SKILLS else 1 for m in analysis["matched"])
+    skills = min(55, round(55 * weighted / 14))
+
+    if "azure" in title and ("solution architect" in title or "solutions architect" in title):
+        t = 20
+    elif "azure" in title and "architect" in title:
+        t = 17
+    elif "cloud" in title and "architect" in title:
+        t = 14
+    elif "architect" in title:
+        t = 10
+    else:
+        t = 6
+
+    if not needs_visa or analysis.get("visa_signal"):
+        v = 15            # India needs no sponsorship; abroad needs sponsorship/relocation wording
+    else:
+        v = 0
+
+    yrs = [int(x) for x in re.findall(r"(\d{1,2})\s*\+?\s*(?:-\s*\d{1,2}\s*)?(?:years|yrs)", text)]
+    if not yrs:
+        e = 7
+    elif 5 <= yrs[0] <= 15:
+        e = 10
+    elif yrs[0] < 5:
+        e = 5
+    else:
+        e = 3
+
+    return {"score": skills + t + v + e,
+            "breakdown": f"Skills {skills}/55 &middot; Title {t}/20 &middot; Visa/relocation {v}/15 &middot; Experience {e}/10"}
+
+
 def todays_queries() -> list[str]:
     today = datetime.now(IST)
     wd = today.weekday()                      # Mon=0
@@ -335,16 +383,24 @@ def apply_links(job: dict) -> tuple[str, str]:
     return main, " &middot; ".join(alts)
 
 
+def badge(score: int) -> str:
+    color = "#0a7d32" if score >= BEST_SCORE else "#c77700" if score >= 70 else "#777"
+    label = f"{score}% match" + (" &middot; BEST MATCH" if score >= BEST_SCORE else "")
+    return (f"<span style='background:{color};color:#fff;padding:1px 8px;border-radius:10px;"
+            f"font-size:12px;font-weight:600;white-space:nowrap'>{label}</span>")
+
+
 def render_job(j: dict) -> str:
     job, a = j["job"], j["analysis"]
     loc = ", ".join(x for x in (job.get("job_city"), job.get("job_state"), job.get("job_country")) if x)
     main_link, alt_links = apply_links(job)
     h = (
         "<div style='margin:0 0 14px'>"
-        f"<a href='{main_link}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a><br>"
+        f"<a href='{main_link}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a> {badge(a['score'])}<br>"
         f"<span>{job.get('employer_name')} &middot; {loc} &middot; via {job.get('job_publisher') or 'web'}</span><br>"
         f"<span style='color:#0a6'>Skills matched ({len(a['matched'])}): {', '.join(a['matched'][:10]) or 'none found in the text'}</span>"
     )
+    h += f"<br><span style='font-size:11px;color:#999'>Score: {a['breakdown']}</span>"
     if a.get("unconfirmed"):
         h += "<br><span style='color:#b60'><i>Sponsorship not mentioned in the posting - check with the recruiter.</i></span>"
     if a["visa_signal"]:
@@ -356,15 +412,31 @@ def render_job(j: dict) -> str:
 def build_email(results: dict, errors: list[str], stats: dict | None = None,
                 others: dict | None = None) -> tuple[str, str]:
     today = datetime.now(IST).strftime("%a %d %b %Y")
-    total = sum(len(v) for v in results.values())
-    total_other = sum(len(v) for v in (others or {}).values())
-    subject = f"Azure Architect jobs - {total} new" + (f" + {total_other} more" if total_other else "") + f" ({today})"
+    others = others or {}
+    best = sorted(
+        (j for d in (results, others) for lst in d.values() for j in lst if j["analysis"]["score"] >= BEST_SCORE),
+        key=lambda j: j["analysis"]["score"], reverse=True)
+    best_ids = {id(j) for j in best}
+    results = {k: [j for j in v if id(j) not in best_ids] for k, v in results.items()}
+    others = {k: [j for j in v if id(j) not in best_ids] for k, v in others.items()}
+    total = len(best) + sum(len(v) for v in results.values())
+    total_other = sum(len(v) for v in others.values())
+    subject = (f"Azure Architect jobs - {len(best)} best match{'es' if len(best) != 1 else ''} ({BEST_SCORE}+), "
+               f"{total} new ({today})")
 
     parts = [
         "<div style='font-family:Segoe UI,Arial,sans-serif;max-width:760px'>",
         f"<h2>Azure Solution Architect jobs - {today}</h2>",
-        f"<p>{total} best matches (resume skills + visa/relocation rule) and {total_other} more Azure architect roles below them.</p>",
+        f"<p><b>{len(best)}</b> best matches (score {BEST_SCORE}+), {total - len(best)} other good matches and "
+        f"{total_other} more Azure architect roles.</p>",
+        "<p style='color:#777;font-size:12px'>Match score out of 100 = resume skills 55 + title fit 20 + "
+        "visa/relocation 15 + experience fit 10. Abroad roles only reach "
+        f"{BEST_SCORE}+ if the posting mentions sponsorship or relocation.</p>",
     ]
+    if best:
+        parts.append("<h3 style='border-bottom:2px solid #0a7d32;padding-bottom:4px;color:#0a7d32'>"
+                     f"Best matches ({BEST_SCORE}+)</h3>")
+        parts.extend(render_job(j) for j in best)
     for label, jobs in results.items():
         extra = (others or {}).get(label, [])
         parts.append(f"<h3 style='border-bottom:1px solid #ddd;padding-bottom:4px'>{label} ({len(jobs)} best + {len(extra)} more)</h3>")
@@ -440,6 +512,8 @@ def main() -> int:
                     st["seen"] += 1
                     continue
                 a = analyse(job, needs_visa)
+                if isinstance(a, dict):
+                    a.update(score_job(job, a, needs_visa))
                 if isinstance(a, str):
                     if a in ("skills", "visa_negative", "no_visa_mention"):
                         st["title_ok"] += 1
@@ -450,9 +524,10 @@ def main() -> int:
                         snippet = visa_snippet(text) if needs_visa else ""
                         if needs_visa and any(re.search(p, text) for p in NO_VISA_PATTERNS):
                             continue
-                        extra.append({"job": job, "analysis": {
-                            "matched": match_skills(text), "visa_signal": snippet,
-                            "unconfirmed": needs_visa and not snippet}})
+                        ea = {"matched": match_skills(text), "visa_signal": snippet,
+                              "unconfirmed": needs_visa and not snippet}
+                        ea.update(score_job(job, ea, needs_visa))
+                        extra.append({"job": job, "analysis": ea})
                     continue
                 st["title_ok"] += 1
                 st["skills_ok"] += 1
@@ -463,7 +538,7 @@ def main() -> int:
             failed_countries += 1
         confirmed = [c for c in collected if not c["analysis"]["unconfirmed"]]
         unconf = [c for c in collected if c["analysis"]["unconfirmed"]][:MAX_UNCONFIRMED_PER_COUNTRY]
-        key = lambda x: len(x["analysis"]["matched"])
+        key = lambda x: x["analysis"]["score"]
         confirmed.sort(key=key, reverse=True)
         unconf.sort(key=key, reverse=True)
         extra.sort(key=key, reverse=True)
