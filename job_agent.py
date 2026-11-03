@@ -18,6 +18,7 @@ import os
 import re
 import smtplib
 import ssl
+from urllib.parse import quote_plus
 import sys
 from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
@@ -197,6 +198,53 @@ def save_seen(seen: dict) -> None:
     SEEN_FILE.write_text(json.dumps(seen))
 
 
+INDEED_DOMAINS = {"in": "in.indeed.com", "gb": "uk.indeed.com", "de": "de.indeed.com", "ie": "ie.indeed.com",
+                  "nl": "nl.indeed.com", "ca": "ca.indeed.com", "au": "au.indeed.com", "ae": "ae.indeed.com"}
+
+
+def job_board_links(label: str) -> str:
+    """One-click searches on Google Jobs, LinkedIn, Indeed (and Naukri for India). No API quota used."""
+    cc, loc, needs_visa = next((c, l, v) for lab, c, l, v in TARGETS if lab == label)
+    extra = " visa sponsorship" if needs_visa else ""
+    rows = []
+    for title in (PRIMARY_QUERY, TUESDAY_QUERY):
+        kw = f"{title}{extra}"
+        links = [
+            ("Google Jobs", f"https://www.google.com/search?q={quote_plus(kw + ' jobs in ' + loc)}&ibp=htl;jobs&hl=en"),
+            ("LinkedIn", f"https://www.linkedin.com/jobs/search/?keywords={quote_plus(kw)}&location={quote_plus(loc)}&f_TPR=r604800&sortBy=DD"),
+            ("Indeed", f"https://{INDEED_DOMAINS[cc]}/jobs?q={quote_plus(kw)}&l={quote_plus(loc)}&fromage=7&sort=date"),
+        ]
+        if cc == "in":
+            slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+            links.append(("Naukri", f"https://www.naukri.com/{slug}-jobs-in-mumbai"))
+        rows.append(f"<b>{title}:</b> " + " &middot; ".join(f"<a href='{u}'>{n}</a>" for n, u in links))
+    return ("<p style='font-size:12px;color:#555;margin:2px 0 14px;line-height:1.7'>Search more: <br>"
+            + "<br>".join(rows) + "</p>")
+
+
+def apply_links(job: dict) -> tuple[str, str]:
+    """Pick the best main link and build a line of alternative links.
+    Some job boards block visitors from other countries ("not available in your country"),
+    so we prefer the employer's own page and always offer alternatives."""
+    options = job.get("apply_options") or []
+    direct = [o for o in options if o.get("is_direct") and o.get("apply_link")]
+    main = (direct[0]["apply_link"] if direct else None) or job.get("job_apply_link") or \
+        (options[0]["apply_link"] if options else "")
+    alts, used = [], {main}
+    for o in options:
+        link = o.get("apply_link")
+        if link and link not in used:
+            used.add(link)
+            alts.append(f"<a href='{link}'>{o.get('publisher') or 'Other'}</a>")
+        if len(alts) == 3:
+            break
+    if job.get("job_google_link"):
+        alts.append(f"<a href='{job['job_google_link']}'>Google Jobs</a>")
+    q = quote_plus(f"{job.get('job_title', '')} {job.get('employer_name', '')}")
+    alts.append(f"<a href='https://www.google.com/search?q={q}'>Find on Google</a>")
+    return main, " &middot; ".join(alts)
+
+
 def build_email(results: dict, errors: list[str], stats: dict | None = None) -> tuple[str, str]:
     today = datetime.now(IST).strftime("%a %d %b %Y")
     total = sum(len(v) for v in results.values())
@@ -221,9 +269,10 @@ def build_email(results: dict, errors: list[str], stats: dict | None = None) -> 
         for j in jobs:
             job, a = j["job"], j["analysis"]
             loc = ", ".join(x for x in (job.get("job_city"), job.get("job_state"), job.get("job_country")) if x)
+            main_link, alt_links = apply_links(job)
             parts.append(
                 "<div style='margin:0 0 14px'>"
-                f"<a href='{job.get('job_apply_link')}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a><br>"
+                f"<a href='{main_link}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a><br>"
                 f"<span>{job.get('employer_name')} &middot; {loc} &middot; via {job.get('job_publisher') or 'web'}</span><br>"
                 f"<span style='color:#0a6'>Skills matched ({len(a['matched'])}): {', '.join(a['matched'][:10])}</span>"
             )
@@ -231,7 +280,9 @@ def build_email(results: dict, errors: list[str], stats: dict | None = None) -> 
                 parts.append("<br><span style='color:#b60'><i>Sponsorship not mentioned in the posting - check with the recruiter.</i></span>")
             if a["visa_signal"]:
                 parts.append(f"<br><span style='color:#555'><i>Visa/relocation note:</i> ...{a['visa_signal']}...</span>")
+            parts.append(f"<br><span style='font-size:12px;color:#555'>Link blocked or \"not available in your country\"? Try: {alt_links}</span>")
             parts.append("</div>")
+        parts.append(job_board_links(label))
     if errors:
         parts.append("<p style='color:#b00'>Issues: " + "; ".join(errors) + "</p>")
     parts.append("<p style='color:#888;font-size:12px'>Always verify the sponsorship wording on the original posting before applying.</p></div>")
