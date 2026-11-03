@@ -6,7 +6,7 @@ Abroad roles must mention visa sponsorship / relocation and not say "no sponsors
 Jobs are ranked by how many of your resume skills they mention and are never sent twice.
 
 ## Setup (about 10 minutes)
-1. **JSearch API key**: sign up at rapidapi.com, subscribe to "JSearch" (free plan), copy the key.
+1. **JSearch API key**: sign up at app.openwebninja.com/api/jsearch (free tier) and copy your key; add it as the secret `OPENWEBNINJA_API_KEY`. (RapidAPI key via `RAPIDAPI_KEY` also works as a fallback.)
 2. **Gmail App Password**: Google Account > Security > 2-Step Verification > App passwords.
 3. **GitHub**: create a *private* repo, upload these files (keep the `.github/workflows` folder).
 4. Repo > Settings > Secrets and variables > Actions > add:
@@ -23,3 +23,7 @@ Jobs are ranked by how many of your resume skills they mention and are never sen
 - Role titles searched: Azure Solution Architect (Mon/Wed/Fri), Azure Cloud Architect (Tue), and a weekly rotation of Migration / Infrastructure / Technical / Enterprise Cloud / AKS Platform architect titles (Thu). Set env `QUERIES_PER_COUNTRY=2` or `3` to search more titles daily if your API plan allows.
 - Free API plans have a monthly request cap; 8 countries x weekdays fits a ~200/month plan. Check your plan before switching to daily.
 - GitHub cron can start a few minutes late.
+
+## Match score
+Every job gets a score out of 100: resume skills 55 + title fit 20 + visa/relocation 15 + experience fit 10.
+Jobs scoring 88 or more are shown first as BEST MATCH. Change the threshold with the `BEST_SCORE` env var.
