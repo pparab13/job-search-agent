@@ -7,7 +7,8 @@ support (except India), ranks them by how many of your resume skills they mentio
 removes jobs already emailed before, and emails you an HTML digest.
 
 Env vars (set as GitHub Actions secrets or in a local .env export):
-  RAPIDAPI_KEY   - your RapidAPI key (subscribed to "JSearch")
+  OPENWEBNINJA_API_KEY - JSearch key from app.openwebninja.com (recommended, used if set)
+  RAPIDAPI_KEY         - OR a RapidAPI key subscribed to "JSearch" (fallback)
   SMTP_USER      - sender Gmail address
   SMTP_PASS      - Gmail App Password (not your normal password)
   MAIL_TO        - where to send the digest (defaults to SMTP_USER)
@@ -99,22 +100,26 @@ SEEN_FILE = Path(os.getenv("SEEN_FILE", "seen_jobs.json"))
 IST = timezone(timedelta(hours=5, minutes=30))
 
 API_HOST = "jsearch.p.rapidapi.com"
+OWN_URL = "https://api.openwebninja.com/jsearch/search"
 
 
 # ----------------------------------------------------------------------------
-def fetch_jobs(query: str, country: str, location: str, api_key: str) -> list[dict]:
-    r = requests.get(
-        f"https://{API_HOST}/search",
-        headers={"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": API_HOST},
-        params={
-            "query": f"{query} in {location}",
-            "country": country,
-            "date_posted": DATE_POSTED,
-            "num_pages": "1",
-        },
-        timeout=40,
-    )
-    r.raise_for_status()
+def fetch_jobs(query: str, country: str, location: str, creds: dict) -> list[dict]:
+    params = {
+        "query": f"{query} in {location}",
+        "country": country,
+        "date_posted": DATE_POSTED,
+        "num_pages": "1",
+    }
+    if creds.get("own"):                     # OpenWeb Ninja (JSearch's own portal)
+        url = OWN_URL
+        headers = {"x-api-key": creds["own"]}
+    else:                                    # RapidAPI marketplace
+        url = f"https://{API_HOST}/search"
+        headers = {"X-RapidAPI-Key": creds["rapid"], "X-RapidAPI-Host": API_HOST}
+    r = requests.get(url, headers=headers, params=params, timeout=40)
+    if not r.ok:
+        raise RuntimeError(f"HTTP {r.status_code} from {url.split('/')[2]}: {r.text[:160]}")
     return r.json().get("data", []) or []
 
 
@@ -229,7 +234,9 @@ def send_email(subject: str, html: str) -> None:
 
 
 def main() -> int:
-    api_key = os.environ["RAPIDAPI_KEY"]
+    creds = {"own": os.getenv("OPENWEBNINJA_API_KEY"), "rapid": os.getenv("RAPIDAPI_KEY")}
+    if not (creds["own"] or creds["rapid"]):
+        sys.exit("Missing API key: set OPENWEBNINJA_API_KEY (or RAPIDAPI_KEY) as a GitHub secret.")
     seen, now = load_seen(), datetime.now(IST).isoformat()
     results, errors = {}, []
 
@@ -237,7 +244,7 @@ def main() -> int:
         collected, ids = [], set()
         for q in todays_queries():
             try:
-                jobs = fetch_jobs(q, cc, loc, api_key)
+                jobs = fetch_jobs(q, cc, loc, creds)
             except Exception as e:
                 errors.append(f"{label}: {e}")
                 continue
@@ -263,6 +270,9 @@ def main() -> int:
         send_email(subject, html)
         print("Sent:", subject)
     save_seen(seen)
+    if len(errors) == len(TARGETS):
+        print("All searches failed:", errors[0])
+        return 1
     return 0
 
 
