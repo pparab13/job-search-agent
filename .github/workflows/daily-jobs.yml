@@ -29,4 +29,5 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
+          SHOW_UNCONFIRMED: "1"   # also list strong matches that do not mention sponsorship (set "0" for strict)
         run: python job_agent.py
