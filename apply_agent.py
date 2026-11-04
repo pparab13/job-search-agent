@@ -181,6 +181,7 @@ Return JSON with exactly these keys:
  "achievement_ids": ["ids from MASTER_RESUME.achievements, 3 to 4, most relevant first"],
  "roles": {{"ltim": [{{"source": "ltim-3", "text": "..."}}], "hexaware": [...], "tcs": [...], "informist": [...]}},
  "cover_letter": ["paragraph 1", "paragraph 2", "paragraph 3"],
+ "coverage": 0-100 integer: how fully MASTER_RESUME clearly evidences the job's ESSENTIAL requirements (ignore nice-to-haves). Be strict: if the job is mainly about technologies or domains the resume does not show (other clouds, on-prem platforms, databases, specific vendors), the number must be low. 100 = every essential requirement is evidenced,
  "fit_notes": ["2-4 short reasons the candidate fits this job"],
  "gaps": ["requirements in the job that MASTER_RESUME does not clearly show; empty list if none"]
 }}"""
@@ -214,6 +215,10 @@ def validate(t: dict, master: dict, rules: dict) -> tuple[dict, list[str]]:
     clean = {"summary": drop_bad_sentences(t.get("summary", ""), allowed) or master["summary_base"].split(". ")[0] + ".",
              "fit_notes": [str(x) for x in t.get("fit_notes", [])][:4],
              "gaps": [str(x) for x in t.get("gaps", [])][:8]}
+    try:
+        clean["coverage"] = max(0, min(100, int(re.sub(r"[^0-9]", "", str(t.get("coverage", ""))) or 50)))
+    except ValueError:
+        clean["coverage"] = 50
     if bad_numbers(t.get("summary", ""), allowed):
         problems.append("summary: removed sentences with numbers not in your resume")
 

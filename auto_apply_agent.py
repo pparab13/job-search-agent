@@ -131,26 +131,31 @@ def send_application(master: dict, job: dict, t: dict, rules: dict, to: str, fil
 def report_html(rows: list[dict], total_log: int, auto_on: bool) -> str:
     today = datetime.now(IST).strftime("%a %d %b %Y")
     by = lambda st: [r for r in rows if r["status"] == st]
-    applied, preview, manual, held, skipped, failed = (by(s) for s in ("applied", "preview", "manual", "held", "skipped", "failed"))
+    applied, preview, manual, held, skipped, failed, lowfit = (by(s) for s in ("applied", "preview", "manual", "held", "skipped", "failed", "lowfit"))
     h = ["<div style='font-family:Segoe UI,Arial,sans-serif;max-width:780px'>", f"<h2>Application report - {today}</h2>"]
     mode = "AUTO-APPLY is ON" if auto_on else "PREVIEW mode: nothing was sent to employers (set the AUTO_APPLY variable to true to start applying)"
     h.append(f"<p style='color:#555'>{mode}. Jobs scoring {A.MIN_SCORE}+ today: {len(rows)}. "
              f"Applications sent so far (all time): {total_log}.</p>")
     h.append(f"<p><b>{len(applied)}</b> applied by e-mail &middot; <b>{len(preview)}</b> would apply (preview) &middot; "
-             f"<b>{len(manual)}</b> ready for you to apply &middot; <b>{len(held)}</b> held back &middot; {len(skipped)} skipped</p>")
+             f"<b>{len(manual)}</b> ready for you to apply &middot; <b>{len(held)}</b> held back &middot; {len(lowfit)} below {A.MIN_SCORE}% after the fit check &middot; {len(skipped)} skipped</p>")
 
     def card(r, extra=""):
         job, a = r["job"], r["analysis"]
         main_link, alt = ja.apply_links(job)
+        score = r.get("final", a["score"])
         s = ["<div style='border:1px solid #ddd;border-radius:8px;padding:10px 14px;margin:10px 0'>",
-             f"<a href='{main_link}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a> {ja.badge(a['score'])}<br>"
+             f"<a href='{main_link}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a> {ja.badge(score)}<br>"
              f"<span>{job.get('employer_name')} &middot; {r['label']} &middot; {r['rules']['doc'] if r.get('rules') else ''}</span>"]
+        if "final" in r:
+            s.append(f"<br><span style='color:#555;font-size:12px'>Fit check: keyword score {a['score']}% &middot; resume covers {r['coverage']}% "
+                     f"of the essential requirements &rarr; final {r['final']}%</span>")
         if extra:
             s.append(f"<br>{extra}")
         if r.get("reason"):
             s.append(f"<br><span style='color:#b60'>{r['reason']}</span>")
         if r.get("gaps"):
-            s.append("<br><span style='color:#b00'>Not claimed (your resume doesn't show): " + "; ".join(r["gaps"]) + "</span>")
+            shown = r["gaps"][:3] if r["status"] == "lowfit" else r["gaps"]
+            s.append("<br><span style='color:#b00'>Not claimed (your resume doesn't show): " + "; ".join(shown) + "</span>")
         if r.get("notes"):
             s.append("<br><span style='color:#777;font-size:12px'>Checks: " + "; ".join(r["notes"]) + "</span>")
         if r.get("files"):
@@ -168,6 +173,7 @@ def report_html(rows: list[dict], total_log: int, auto_on: bool) -> str:
     section("Ready for you to apply (online form / portal)", "#c77700", manual,
             lambda r: "Documents are attached to this e-mail. Open the link, upload them, and submit.")
     section("Held back", "#b00", held)
+    section(f"Below {A.MIN_SCORE}% after the detailed fit check (not worth applying)", "#777", lowfit)
     section("Skipped", "#777", skipped)
     section("Could not prepare", "#b00", failed)
     h.append("<p style='color:#555;font-size:12px'>To finish the 'ready for you' jobs faster, download the <b>application-kits</b> artifact "
@@ -222,6 +228,12 @@ def main() -> int:
             t, problems = A.tailor(master, job, rules)
             row["notes"] += problems
             row["gaps"] = t["gaps"]
+            row["coverage"] = t["coverage"]
+            row["final"] = round((a["score"] + t["coverage"]) / 2)      # keyword score + honest resume-coverage check
+            if row["final"] < A.MIN_SCORE:
+                row.update(status="lowfit", reason=f"Keyword score {a['score']}% but your resume covers only about {t['coverage']}% "
+                                                   f"of the essential requirements, so the final fit is {row['final']}%. No documents prepared.")
+                continue
             base = f"{A.slug(job.get('employer_name'))}_{A.slug(job.get('job_title'))}_{e['cc'].upper()}"
             rp, lp = A.OUT / f"{base}_{rules['doc'].split()[0]}.docx", A.OUT / f"{base}_CoverLetter.docx"
             A.build_resume(master, t, rules, rp)
