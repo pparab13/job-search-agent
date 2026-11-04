@@ -38,10 +38,13 @@
   "Network Segmentation",
   "VPN Gateway",
   "Load Balancer",
+  "Application Gateway",
   "Azure Virtual WAN",
   "ExpressRoute",
   "Private Link",
   "Hybrid Connectivity",
+  "hub-and-spoke design",
+  "Azure Firewall",
   "Azure Migrate",
   "Assessment & Discovery",
   "Migration Strategy",
@@ -58,6 +61,7 @@
   "PowerShell",
   "Azure DevOps CI/CD",
   "Automation",
+  "Bicep",
   "Operational Excellence",
   "Technical Documentation",
   "Stakeholder Management",
@@ -67,6 +71,7 @@
   "Architecture Reviews",
   "Cross-Functional Leadership",
   "Mentoring"
+  "proof-of-concept",
  ],
  "achievements": [
   {
