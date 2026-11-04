@@ -220,6 +220,34 @@ def fetch_serpapi(query: str, country: str, location: str, key: str) -> list[dic
     return jobs
 
 
+# ---------------------------------------------------------------------------
+# Infrastructure-only filter: drop roles that ask for coding / software-development experience.
+# (PowerShell, Terraform, ARM, Bicep, Bash and YAML are infrastructure tooling and are NOT treated as coding.)
+# Set ALLOW_CODING=1 to switch the filter off.
+# ---------------------------------------------------------------------------
+ALLOW_CODING = os.getenv("ALLOW_CODING", "0") == "1"
+CODING_TITLE_WORDS = ("developer", "software engineer", "software architect", "application architect",
+                      "full stack", "full-stack", "fullstack", "programmer", "sde")
+CODING_PATTERNS = [re.compile(p) for p in (
+    r"(?<![a-z0-9])\.net(?![a-z])", r"\bdotnet\b", r"\basp\.net\b", r"(?<![a-z])c#", r"\bc[- ]sharp\b", r"\bc\+\+",
+    r"\bjava\b", r"\bjavascript\b", r"\btypescript\b", r"\bpython\b", r"\bnode\.?js\b", r"\bgolang\b",
+    r"\bruby\b", r"\bphp\b", r"\bscala\b", r"\bkotlin\b", r"\brust\b", r"\bspring boot\b",
+    r"\bdjango\b", r"\bflask\b", r"\breact(?:\.?js)?\b", r"\bangular\b", r"\bvue(?:\.?js)?\b",
+    r"\bfull[- ]?stack\b", r"\bcoding\b", r"\bprogramming\b", r"\bsoftware development\b",
+    r"\bsoftware engineering\b", r"\bapplication development\b", r"\bsoftware developer\b",
+    r"\bdevelopment experience\b", r"\bwrite code\b",
+)]
+NO_CODING_OK = re.compile(r"\b(?:no|without|not require[d]?|not necessary)\s+(?:hands[- ]on\s+)?(?:coding|programming)\b|"
+                          r"\b(?:coding|programming)\s+(?:is\s+)?not\s+required\b")
+
+
+def requires_coding(title: str, text: str) -> bool:
+    if any(w in title for w in CODING_TITLE_WORDS):
+        return True
+    text = NO_CODING_OK.sub(" ", text)
+    return any(p.search(text) for p in CODING_PATTERNS)
+
+
 def job_text(job: dict) -> str:
     return " ".join(
         str(x or "") for x in (
@@ -253,6 +281,8 @@ def analyse(job: dict, needs_visa: bool):
         return "title"
     if any(k in title for k in ("junior", "intern", "graduate", "trainee", "entry level")):
         return "title"
+    if not ALLOW_CODING and requires_coding(title, text):
+        return "coding"
 
     matched = match_skills(text)
     if len(matched) < MIN_SKILL_MATCHES:
@@ -469,7 +499,7 @@ def build_email(results: dict, errors: list[str], stats: dict | None = None,
                 "<p style='color:#888;font-size:12px;margin:0 0 6px'>Search funnel: "
                 f"fetched {st['fetched']} &rarr; Azure architect-type titles {st['title_ok']} "
                 f"&rarr; enough resume skills {st['skills_ok']} &rarr; passed visa rule {st['visa_ok']} "
-                f"(already sent before: {st['seen']})</p>")
+                f"(dropped for coding/developer requirements: {st['coding']}; already sent before: {st['seen']})</p>")
         if not jobs:
             parts.append("<p style='color:#888'>" + ("This country's top jobs are listed under Best matches above." if bc else "No new good matches today.") + "</p>")
         parts.extend(render_job(j) for j in jobs)
@@ -484,16 +514,44 @@ def build_email(results: dict, errors: list[str], stats: dict | None = None,
     return subject, "".join(parts)
 
 
+def smtp_send(msg, user: str, pw: str, to: str) -> None:
+    """Send via Gmail. Checks the secrets first, strips spaces from the App Password, and if Gmail drops the
+    connection on port 465 retries on port 587 (STARTTLS) before giving up with a plain-English error."""
+    user, pw = (user or "").strip(), (pw or "").replace(" ", "").strip()
+    if not user or not pw:
+        raise RuntimeError("SMTP_USER or SMTP_PASS is EMPTY in this run. Re-add both as repository secrets "
+                           "(Settings > Secrets and variables > Actions > Secrets) and check the names match exactly.")
+    last = None
+    for attempt in range(2):
+        for mode in ("ssl465", "starttls587"):
+            try:
+                if mode == "ssl465":
+                    s = smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=60)
+                else:
+                    s = smtplib.SMTP("smtp.gmail.com", 587, timeout=60)
+                    s.starttls(context=ssl.create_default_context())
+                with s:
+                    s.login(user, pw)
+                    s.sendmail(user, [to], msg.as_string())
+                return
+            except smtplib.SMTPAuthenticationError as e:
+                raise RuntimeError("Gmail rejected the login (wrong or revoked App Password, or 2-Step Verification is off). "
+                                   "Create a NEW App Password and update the SMTP_PASS secret.") from e
+            except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, OSError) as e:
+                last = e
+        time.sleep(8)
+    raise RuntimeError(f"Could not connect to Gmail after retries: {last}. If this keeps happening, SMTP_USER/SMTP_PASS "
+                       "may be blank or the App Password was revoked - create a new one and update the secret.")
+
+
 def send_email(subject: str, html: str) -> None:
-    user, pw = os.environ["SMTP_USER"], os.environ["SMTP_PASS"]
+    user, pw = os.getenv("SMTP_USER", ""), os.getenv("SMTP_PASS", "")
     to = os.getenv("MAIL_TO") or user
     msg = MIMEMultipart("alternative")
     msg["Subject"], msg["From"], msg["To"] = subject, user, to
     msg.attach(MIMEText(re.sub(r"<[^>]+>", "", html), "plain"))
     msg.attach(MIMEText(html, "html"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context()) as s:
-        s.login(user, pw)
-        s.sendmail(user, [to], msg.as_string())
+    smtp_send(msg, user, pw, to)
 
 
 def main() -> int:
@@ -509,7 +567,7 @@ def main() -> int:
 
     for label, cc, loc, needs_visa in TARGETS:
         collected, extra, ids = [], [], set()
-        st = {"fetched": 0, "title_ok": 0, "skills_ok": 0, "visa_ok": 0, "seen": 0}
+        st = {"fetched": 0, "title_ok": 0, "skills_ok": 0, "visa_ok": 0, "seen": 0, "coding": 0}
         sources_ok = 0
         for q in todays_queries():
             fetchers = []
@@ -540,7 +598,9 @@ def main() -> int:
                 if isinstance(a, dict):
                     a.update(score_job(job, a, needs_visa))
                 if isinstance(a, str):
-                    if a in ("skills", "visa_negative", "no_visa_mention"):
+                    if a == "coding":
+                        st["coding"] += 1
+                    if a in ("skills", "visa_negative", "no_visa_mention", "coding"):
                         st["title_ok"] += 1
                     if a in ("visa_negative", "no_visa_mention"):
                         st["skills_ok"] += 1
@@ -574,6 +634,12 @@ def main() -> int:
             c["label"] = label
             seen[job_id(c["job"])] = now
             seen[dedupe_key(c["job"])] = now
+
+    # hand the scored jobs to apply_agent.py (tailored resume + cover letter for 80+ matches)
+    cc_of = {lab: c for lab, c, _, _ in TARGETS}
+    dump = [{"label": lab, "cc": cc_of[lab], "job": c["job"], "analysis": c["analysis"]}
+            for lab in results for c in results[lab] + others[lab]]
+    Path(os.getenv("SCORED_JOBS", "scored_jobs.json")).write_text(json.dumps(dump, default=str))
 
     subject, html = build_email(results, errors, stats, others)
     subject += f" | search: {', '.join(todays_queries())}"
