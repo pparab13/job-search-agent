@@ -1,0 +1,276 @@
+{
+ "_help": "Single source of truth for every tailored resume. The agent may only use facts that are in this file. Fill in the empty personal fields you are happy to share (nationality, notice_period, date_of_birth, photo_path, linkedin).",
+ "personal": {
+  "name": "Prathamesh Parab",
+  "headline": "Azure Solution Architect | Cloud Infrastructure | Azure Migration",
+  "location": "Mumbai, Maharashtra, India",
+  "phone": "9892869174",
+  "email": "prathameshparab05@gmail.com",
+  "linkedin": "",
+  "nationality": "",
+  "notice_period": "",
+  "date_of_birth": "",
+  "photo_path": ""
+ },
+ "summary_base": "Azure Solution Architect and Cloud Infrastructure professional with 12+ years of IT experience and 6+ years in architecture-focused responsibilities, specializing in Microsoft Azure, enterprise cloud transformation, infrastructure modernization, migration, governance, networking, security, resiliency, container platforms, and Infrastructure as Code. Experienced in translating business and technical requirements into High-Level Design (HLD) and Low-Level Design (LLD), designing Azure Landing Zones, developing migration roadmaps, implementing governance guardrails, and leading end-to-end workload migrations.",
+ "skills": [
+  "Azure Solution Architecture",
+  "Enterprise Cloud Architecture",
+  "Cloud Transformation",
+  "Azure Landing Zones",
+  "Azure Cloud Adoption Framework (CAF)",
+  "Azure Well-Architected Framework",
+  "Azure Governance",
+  "Management Groups",
+  "Azure Policy",
+  "Identity & Access Management",
+  "RBAC",
+  "Resource Locks",
+  "Security & Compliance",
+  "Microsoft Defender for Cloud",
+  "Cost Optimization",
+  "Azure VMs",
+  "App Services",
+  "Azure Kubernetes Service (AKS)",
+  "Containerized Workloads",
+  "Platform Architecture",
+  "VNets",
+  "Network Segmentation",
+  "VPN Gateway",
+  "Load Balancer",
+  "Azure Virtual WAN",
+  "ExpressRoute",
+  "Private Link",
+  "Hybrid Connectivity",
+  "Azure Migrate",
+  "Assessment & Discovery",
+  "Migration Strategy",
+  "Migration Roadmaps",
+  "IaaS",
+  "PaaS",
+  "Disaster Recovery",
+  "High Availability",
+  "Business Continuity",
+  "Azure Site Recovery",
+  "Azure Backup",
+  "Terraform",
+  "ARM Templates",
+  "PowerShell",
+  "Azure DevOps CI/CD",
+  "Automation",
+  "Operational Excellence",
+  "Technical Documentation",
+  "Stakeholder Management",
+  "Customer Discovery Workshops",
+  "Requirements Analysis",
+  "HLD / LLD",
+  "Architecture Reviews",
+  "Cross-Functional Leadership",
+  "Mentoring"
+ ],
+ "achievements": [
+  {
+   "id": "ach-1",
+   "text": "100+ servers / workloads migrated to Azure across end-to-end migration programs and customer environments."
+  },
+  {
+   "id": "ach-2",
+   "text": "50+ on-premises workloads migrated with 99.99% system availability during the delivery engagement."
+  },
+  {
+   "id": "ach-3",
+   "text": "15% operating cost reduction through Azure solution optimization and infrastructure standardization."
+  },
+  {
+   "id": "ach-4",
+   "text": "Built repeatable Azure deployment and operational automation using Terraform, Azure DevOps, PowerShell, and ARM templates."
+  },
+  {
+   "id": "ach-5",
+   "text": "Designed governance and architecture patterns using Azure Landing Zones, Azure Policy, Management Groups, RBAC, and enterprise networking."
+  }
+ ],
+ "experience": [
+  {
+   "id": "ltim",
+   "tier": "main",
+   "title": "Specialist - Cloud and Infrastructure",
+   "company": "LTIMindtree",
+   "location": "Mumbai, India",
+   "start": "03/2024",
+   "end": "Present",
+   "bullets": [
+    {
+     "id": "ltim-1",
+     "text": "Lead the design and implementation of complex Azure cloud infrastructure solutions aligned with business, security, availability, performance, and operational requirements."
+    },
+    {
+     "id": "ltim-2",
+     "text": "Design and implement Azure Landing Zones aligned with the Azure Cloud Adoption Framework and Azure Well-Architected Framework, including governance guardrails and standardized platform patterns."
+    },
+    {
+     "id": "ltim-3",
+     "text": "Develop scalable target architectures and migration strategies for on-premises workloads moving to Azure; translate discovery outputs and business requirements into HLD, LLD, and migration roadmaps."
+    },
+    {
+     "id": "ltim-4",
+     "text": "Implement governance using Azure Policy, Management Groups, Resource Locks, and RBAC to strengthen security, compliance, standardization, and operational control across Azure environments."
+    },
+    {
+     "id": "ltim-5",
+     "text": "Automate Azure infrastructure deployment using Terraform integrated with Azure DevOps CI/CD pipelines; use PowerShell and ARM templates for repeatable platform operations and automation."
+    },
+    {
+     "id": "ltim-6",
+     "text": "Design Azure networking solutions using VNets, VPN Gateway, Load Balancer, Azure Virtual WAN, ExpressRoute, and Private Link patterns to support secure hybrid connectivity and workload isolation."
+    },
+    {
+     "id": "ltim-7",
+     "text": "Lead customer and stakeholder discussions, technical discovery workshops, architecture reviews, solution documentation, and cross-functional coordination across infrastructure, security, application, and operations teams."
+    },
+    {
+     "id": "ltim-8",
+     "text": "Drive cloud cost and operational optimization initiatives, including infrastructure standardization and automation, contributing to a reported 15% operating cost reduction."
+    }
+   ]
+  },
+  {
+   "id": "hexaware",
+   "tier": "main",
+   "title": "Deputy Technical Specialist",
+   "company": "Hexaware Technologies",
+   "location": "Mumbai, India",
+   "start": "05/2022",
+   "end": "03/2024",
+   "bullets": [
+    {
+     "id": "hexaware-1",
+     "text": "Conducted Azure migration assessments and designed secure, scalable migration approaches for on-premises workloads."
+    },
+    {
+     "id": "hexaware-2",
+     "text": "Led migration activities for 50+ on-premises workloads to Azure while maintaining 99.99% system availability during delivery."
+    },
+    {
+     "id": "hexaware-3",
+     "text": "Automated infrastructure and operational processes using PowerShell, Terraform, and Azure Resource Manager templates."
+    },
+    {
+     "id": "hexaware-4",
+     "text": "Worked across Azure compute, networking, storage, backup, disaster recovery, and platform services to support business-critical workloads and migration programs."
+    },
+    {
+     "id": "hexaware-5",
+     "text": "Collaborated with engineering and customer teams to troubleshoot complex Azure issues and improve reliability, scalability, and operational readiness."
+    }
+   ]
+  },
+  {
+   "id": "tcs",
+   "tier": "main",
+   "title": "I.T. Analyst",
+   "company": "Tata Consultancy Services",
+   "location": "Mumbai, India",
+   "start": "09/2021",
+   "end": "05/2022",
+   "bullets": [
+    {
+     "id": "tcs-1",
+     "text": "Supported enterprise infrastructure operations, service management, troubleshooting, and technical issue resolution across production environments."
+    },
+    {
+     "id": "tcs-2",
+     "text": "Coordinated infrastructure activities with application and support teams to improve service stability and operational efficiency."
+    }
+   ]
+  },
+  {
+   "id": "informist",
+   "tier": "main",
+   "title": "System Administrator",
+   "company": "Informist Data and Analytics Pvt. Ltd.",
+   "location": "Mumbai, India",
+   "start": "02/2016",
+   "end": "09/2021",
+   "bullets": [
+    {
+     "id": "informist-1",
+     "text": "Administered Windows Server infrastructure, virtual machines, storage, networking, and enterprise systems in production environments."
+    },
+    {
+     "id": "informist-2",
+     "text": "Implemented backup and disaster recovery solutions and supported hybrid cloud and on-premises infrastructure operations."
+    },
+    {
+     "id": "informist-3",
+     "text": "Managed system upgrades, migrations, monitoring, troubleshooting, and performance optimization to reduce downtime and improve platform reliability."
+    }
+   ]
+  },
+  {
+   "id": "futuresoft",
+   "tier": "earlier",
+   "title": "System Engineer",
+   "company": "Futuresoft Solutions Pvt. Ltd.",
+   "location": "Mumbai, India",
+   "start": "08/2015",
+   "end": "01/2016",
+   "bullets": []
+  },
+  {
+   "id": "saanvi",
+   "tier": "earlier",
+   "title": "Desktop Support Engineer",
+   "company": "Saanvi Technology",
+   "location": "Mumbai, India",
+   "start": "01/2015",
+   "end": "05/2015",
+   "bullets": []
+  },
+  {
+   "id": "ventura2",
+   "tier": "earlier",
+   "title": "System Administrator",
+   "company": "Ventura Securities Ltd.",
+   "location": "Mumbai, India",
+   "start": "06/2014",
+   "end": "01/2015",
+   "bullets": []
+  },
+  {
+   "id": "ventura1",
+   "tier": "earlier",
+   "title": "System Administrator",
+   "company": "Ventura Securities Ltd.",
+   "location": "Mumbai, India",
+   "start": "11/2011",
+   "end": "11/2012",
+   "bullets": []
+  }
+ ],
+ "certifications": [
+  "Microsoft Certified: Azure Solutions Architect Expert (AZ-305)",
+  "Microsoft Certified: Azure Administrator Associate (AZ-104)",
+  "Microsoft Certified: Azure Network Engineer Associate (AZ-700)",
+  "HashiCorp Certified: Terraform Associate"
+ ],
+ "education": [
+  {
+   "level": "degree",
+   "text": "Bachelor of Science (B.Sc.), Information Technology - PVG's College of Science and Technology, Mumbai (08/2011)"
+  },
+  {
+   "level": "school",
+   "text": "Higher Secondary School - S.K. Somaiya Degree College, Mumbai (07/2008)"
+  },
+  {
+   "level": "school",
+   "text": "Secondary School - Saraswati Vidyalaya, Mumbai (07/2006)"
+  }
+ ],
+ "languages": [
+  "English",
+  "Hindi",
+  "Marathi"
+ ]
+}

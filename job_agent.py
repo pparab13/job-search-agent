@@ -521,6 +521,7 @@ def smtp_send(msg, user: str, pw: str, to: str) -> None:
     if not user or not pw:
         raise RuntimeError("SMTP_USER or SMTP_PASS is EMPTY in this run. Re-add both as repository secrets "
                            "(Settings > Secrets and variables > Actions > Secrets) and check the names match exactly.")
+    rcpts = [to] if isinstance(to, str) else list(to)      # `to` may be one address or a list (To + Cc)
     last = None
     for attempt in range(2):
         for mode in ("ssl465", "starttls587"):
@@ -532,7 +533,7 @@ def smtp_send(msg, user: str, pw: str, to: str) -> None:
                     s.starttls(context=ssl.create_default_context())
                 with s:
                     s.login(user, pw)
-                    s.sendmail(user, [to], msg.as_string())
+                    s.sendmail(user, rcpts, msg.as_string())
                 return
             except smtplib.SMTPAuthenticationError as e:
                 raise RuntimeError("Gmail rejected the login (wrong or revoked App Password, or 2-Step Verification is off). "
