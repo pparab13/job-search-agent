@@ -2,8 +2,13 @@ name: Daily Azure job digest
 
 on:
   schedule:
-    - cron: "30 4 * * 1,3,5"   # 04:30 UTC = 10:00 AM IST, Mon-Wed-Fri (change 1-5 to * for every day)
-  workflow_dispatch:           # lets you run it manually from the Actions tab
+    - cron: "30 4 * * 1-5"   # 04:30 UTC = 10:00 AM IST, Mon-Fri (change 1-5 to * for every day)
+  workflow_dispatch:
+    inputs:
+      ignore_seen:
+        description: "Also resend jobs that were already emailed before"
+        type: boolean
+        default: false           # lets you run it manually from the Actions tab
 
 jobs:
   digest:
@@ -32,5 +37,52 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
+          IGNORE_SEEN: ${{ inputs.ignore_seen }}
           SHOW_UNCONFIRMED: "1"   # also list strong matches that do not mention sponsorship (set "0" for strict)
         run: python job_agent.py
+
+      - name: Restore application log
+        uses: actions/cache/restore@v4
+        with:
+          path: applied_log.json
+          key: applied-${{ github.run_id }}
+          restore-keys: applied-
+
+      - name: Install PDF converter (resumes are sent as PDF)
+        continue-on-error: true
+        run: sudo apt-get install -y --no-install-recommends libreoffice-writer > /dev/null
+
+      - name: Tailor documents, apply (if enabled) and send the application report
+        if: always()
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          AUTO_APPLY: ${{ vars.AUTO_APPLY || 'false' }}   # set the repo VARIABLE AUTO_APPLY to true to start sending applications
+          APPLY_MIN_SCORE: "80"
+          MAX_KITS_PER_RUN: "5"
+          MAX_AUTO_APPLY_PER_RUN: "3"
+          MAX_GAPS_AUTO: "2"
+        run: python auto_apply_agent.py
+
+      - name: Save application log
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: applied_log.json
+          key: applied-${{ github.run_id }}
+
+      - name: Keep a copy of the documents and tracker on GitHub (30 days)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-kits
+          path: |
+            kits/
+            applications_tracker.csv
+            apply_queue.json
+          if-no-files-found: ignore
+          retention-days: 30
