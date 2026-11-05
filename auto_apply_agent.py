@@ -53,6 +53,39 @@ BAD_ADDR = re.compile(r"(no-?reply|do-?not-?reply|donotreply|unsubscribe|privacy
 
 
 # ----------------------------------------------------------------------------
+def lenient_json(text: str):
+    """Load JSON, and if it has the usual hand-editing slips (curly quotes from a phone keyboard, trailing commas,
+    missing commas between lines) repair them in memory. Raises the original error if it still cannot be read."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as first:
+        t = text.lstrip("\ufeff")
+        t = t.replace("\u201c", '"').replace("\u201d", '"')
+        t = re.sub(r",(\s*[}\]])", r"\1", t)                                    # trailing commas
+        t = re.sub(r'(["\d\]}]|true|false|null)(\s*\n\s*)(["{\[])', r"\1,\2\3", t)  # missing commas between lines
+        try:
+            data = json.loads(t)
+            print("WARNING: master_resume.json had small typing errors; they were repaired in memory. "
+                  "Please fix the file in your repo.")
+            return data
+        except json.JSONDecodeError:
+            raise first
+
+
+def load_master() -> dict:
+    try:
+        return lenient_json(A.MASTER_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise RuntimeError(f"{A.MASTER_FILE} is missing from your repo. Upload master_resume.json to the repo root.")
+    except json.JSONDecodeError as ex:
+        lines = A.MASTER_FILE.read_text(encoding="utf-8").splitlines()
+        lo = max(0, ex.lineno - 3)
+        ctx = " | ".join(f"line {i + 1}: {lines[i].strip()[:80]}" for i in range(lo, min(len(lines), ex.lineno + 1)))
+        raise RuntimeError(f"master_resume.json is not valid JSON: {ex.msg} at line {ex.lineno}, column {ex.colno}. "
+                           f"Look near: {ctx}. This is usually a missing comma or quote from an edit. "
+                           "Fix it, or re-upload the original master_resume.json from the zip.")
+
+
 def load_log() -> dict:
     try:
         return json.loads(LOG.read_text())
@@ -185,7 +218,7 @@ def report_html(rows: list[dict], total_log: int, auto_on: bool) -> str:
 
 
 # ----------------------------------------------------------------------------
-def main() -> int:
+def run() -> int:
     if not os.getenv("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY not set - skipping.")
         return 0
@@ -193,7 +226,7 @@ def main() -> int:
     if not A.JOBS_FILE.exists():
         print("No scored_jobs.json - nothing to do.")
         return 0
-    master = json.loads(A.MASTER_FILE.read_text())
+    master = load_master()
     own_email = master["personal"].get("email", "")
     entries = [e for e in json.loads(A.JOBS_FILE.read_text()) if e["analysis"]["score"] >= A.MIN_SCORE and e.get("cc") in A.RULES]
     entries.sort(key=lambda e: e["analysis"]["score"], reverse=True)
@@ -303,6 +336,29 @@ def main() -> int:
     A.send_kits(subject, html, attach + ([CSV_FILE] if CSV_FILE.exists() else []))
     print("Report sent:", subject)
     return 0
+
+
+def main() -> int:
+    """Run the agent; if it crashes, e-mail you the reason instead of failing silently."""
+    try:
+        return run()
+    except Exception as ex:
+        reason = str(ex)[:900]
+        print("ERROR:", reason)
+        user, pw = os.getenv("SMTP_USER", ""), os.getenv("SMTP_PASS", "")
+        if user and pw and not DRY:
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"], msg["From"], msg["To"] = "Application agent FAILED - no report today", user, os.getenv("MAIL_TO") or user
+                html = ("<div style='font-family:Segoe UI,Arial,sans-serif;max-width:700px'><h3 style='color:#b00'>The application agent did not run</h3>"
+                        f"<p>Your job digest was sent, but the resume/application step failed, so there is no application report.</p><p><b>Reason:</b> {reason}</p>"
+                        "<p>Fix it, then run the workflow again from the Actions tab.</p></div>")
+                msg.attach(MIMEText(re.sub(r"<[^>]+>", "", html), "plain"))
+                msg.attach(MIMEText(html, "html"))
+                ja.smtp_send(msg, user, pw, os.getenv("MAIL_TO") or user)
+            except Exception as e2:
+                print("could not send the error e-mail:", e2)
+        return 1
 
 
 if __name__ == "__main__":

@@ -6,8 +6,8 @@
   "location": "Mumbai, Maharashtra, India",
   "phone": "9892869174",
   "email": "prathameshparab05@gmail.com",
-  "linkedin": "www.linkedin.com/in/prathamesh-parab-76423438",
-  "nationality": "Indian",
+  "linkedin": "",
+  "nationality": "",
   "notice_period": "",
   "date_of_birth": "",
   "photo_path": ""
@@ -38,13 +38,10 @@
   "Network Segmentation",
   "VPN Gateway",
   "Load Balancer",
-  "Application Gateway",
   "Azure Virtual WAN",
   "ExpressRoute",
   "Private Link",
   "Hybrid Connectivity",
-  "hub-and-spoke design",
-  "Azure Firewall",
   "Azure Migrate",
   "Assessment & Discovery",
   "Migration Strategy",
@@ -61,7 +58,6 @@
   "PowerShell",
   "Azure DevOps CI/CD",
   "Automation",
-  "Bicep",
   "Operational Excellence",
   "Technical Documentation",
   "Stakeholder Management",
@@ -70,17 +66,16 @@
   "HLD / LLD",
   "Architecture Reviews",
   "Cross-Functional Leadership",
-  "Mentoring",
-  "proof-of-concept",
+  "Mentoring"
  ],
  "achievements": [
   {
    "id": "ach-1",
-   "text": "300+ servers / workloads migrated to Azure across end-to-end migration programs and customer environments."
+   "text": "100+ servers / workloads migrated to Azure across end-to-end migration programs and customer environments."
   },
   {
    "id": "ach-2",
-   "text": "200+ on-premises workloads migrated with 99.99% system availability during the delivery engagement."
+   "text": "50+ on-premises workloads migrated with 99.99% system availability during the delivery engagement."
   },
   {
    "id": "ach-3",
