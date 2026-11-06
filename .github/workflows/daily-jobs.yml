@@ -61,7 +61,7 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           AUTO_APPLY: ${{ vars.AUTO_APPLY || 'false' }}   # set the repo VARIABLE AUTO_APPLY to true to start sending applications
-          APPLY_MIN_SCORE: "80"
+          APPLY_MIN_SCORE: "70"
           MAX_KITS_PER_RUN: "5"
           MAX_AUTO_APPLY_PER_RUN: "3"
           MAX_GAPS_AUTO: "2"
