@@ -391,6 +391,37 @@ INDEED_DOMAINS = {"in": "in.indeed.com", "gb": "uk.indeed.com", "de": "de.indeed
                   "nl": "nl.indeed.com", "ca": "ca.indeed.com", "au": "au.indeed.com", "ae": "ae.indeed.com"}
 
 
+def local_boards(cc: str, title: str, needs_visa: bool) -> list[tuple[str, str]]:
+    """Country-specific job boards. Direct links use each site's own search address; 'site:' links open a Google search
+    limited to that site, so they keep working even if the site changes its URLs."""
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    q = quote_plus(title)
+    extra = " visa sponsorship" if needs_visa else ""
+    site = lambda domain: f"https://www.google.com/search?q={quote_plus(title + extra + ' site:' + domain)}"
+    boards = {
+        "in": [("Foundit", f"https://www.foundit.in/srp/results?query={q}&locations=mumbai"),
+               ("TimesJobs", f"https://www.timesjobs.com/candidate/job-search.html?searchType=personalizedSearch&from=submit&txtKeywords={q}&txtLocation=mumbai"),
+               ("Shine", f"https://www.shine.com/job-search/{slug}-jobs-in-mumbai"),
+               ("Instahyre", site("instahyre.com")), ("Cutshort", site("cutshort.io")), ("Hirist", site("hirist.tech")),
+               ("Wellfound", site("wellfound.com")), ("Glassdoor", site("glassdoor.co.in"))],
+        "gb": [("Reed", f"https://www.reed.co.uk/jobs/{slug}-jobs"), ("CWJobs", f"https://www.cwjobs.co.uk/jobs/{slug}"),
+               ("Totaljobs", f"https://www.totaljobs.com/jobs/{slug}"), ("Glassdoor", site("glassdoor.co.uk"))],
+        "de": [("StepStone", f"https://www.stepstone.de/jobs/{slug}"), ("Xing", site("xing.com/jobs")),
+               ("Glassdoor", site("glassdoor.de"))],
+        "ie": [("IrishJobs", f"https://www.irishjobs.ie/jobs/{slug}"), ("Jobs.ie", site("jobs.ie")),
+               ("Glassdoor", site("glassdoor.ie"))],
+        "nl": [("Nationale Vacaturebank", f"https://www.nationalevacaturebank.nl/vacature/zoeken?query={q}"),
+               ("Glassdoor", site("glassdoor.nl"))],
+        "ca": [("Job Bank (gov.)", f"https://www.jobbank.gc.ca/jobsearch/jobsearch?searchstring={q}&locationstring=Canada"),
+               ("Glassdoor", site("glassdoor.ca"))],
+        "au": [("Seek", f"https://www.seek.com.au/{slug}-jobs"), ("Jora", f"https://au.jora.com/j?q={q}&l=Australia"),
+               ("Glassdoor", site("glassdoor.com.au"))],
+        "ae": [("Bayt", f"https://www.bayt.com/en/uae/jobs/{slug}-jobs/"), ("GulfTalent", site("gulftalent.com")),
+               ("Naukrigulf", f"https://www.naukrigulf.com/{slug}-jobs-in-uae")],
+    }
+    return boards.get(cc, [])
+
+
 def job_board_links(label: str) -> str:
     """One-click searches on Google Jobs, LinkedIn, Indeed (and Naukri for India). No API quota used."""
     cc, loc, needs_visa = next((c, l, v) for lab, c, l, v in TARGETS if lab == label)
@@ -407,6 +438,9 @@ def job_board_links(label: str) -> str:
             slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
             links.append(("Naukri", f"https://www.naukri.com/{slug}-jobs-in-mumbai"))
         rows.append(f"<b>{title}:</b> " + " &middot; ".join(f"<a href='{u}'>{n}</a>" for n, u in links))
+    local = local_boards(cc, PRIMARY_QUERY, needs_visa)
+    if local:
+        rows.append("<b>Local job boards:</b> " + " &middot; ".join(f"<a href='{u}'>{n}</a>" for n, u in local))
     return ("<p style='font-size:12px;color:#555;margin:2px 0 14px;line-height:1.7'>Search more: <br>"
             + "<br>".join(rows) + "</p>")
 
