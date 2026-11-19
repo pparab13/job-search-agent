@@ -72,9 +72,11 @@ SKILLS = [
     # landing zone / frameworks / governance
     "landing zone", "cloud adoption framework", "caf", "well-architected", "waf",
     "azure policy", "management group", "rbac", "resource lock", "governance",
-    "defender for cloud", "compliance", "cost optimi",
+    "defender for cloud", "azure firewall", "firewall policy", "microsoft entra id", "entra id", "azure ad",
+    "managed identities", "conditional access", "privileged identity management", "pim", "identity governance",
+    "compliance", "cost optimi",
     # compute & containers
-    "aks", "kubernetes", "container", "app service", "azure vm",
+    "aks", "azure kubernetes service", "kubernetes", "node pools", "cluster autoscaler", "ingress", "container", "app service", "azure vm",
     # networking
     "vnet", "virtual network", "vpn gateway", "load balancer", "expressroute",
     "virtual wan", "private link", "hybrid connectivity", "network segmentation", "hub and spoke",
@@ -531,7 +533,7 @@ def analyse(job: dict, needs_visa: bool):
 # Skills that matter most for you count double in the match score
 CORE_SKILLS = {
     "landing zone", "cloud adoption framework", "well-architected", "azure policy", "management group",
-    "rbac", "terraform", "aks", "expressroute", "virtual wan", "private link", "azure migrate",
+    "rbac", "azure firewall", "firewall policy", "microsoft entra id", "entra id", "managed identities", "conditional access", "pim", "governance", "terraform", "aks", "azure kubernetes service", "expressroute", "virtual wan", "private link", "azure migrate",
     "site recovery", "azure devops", "powershell", "arm template", "vpn gateway", "hub and spoke",
     "hld", "lld", "defender for cloud",
 }
