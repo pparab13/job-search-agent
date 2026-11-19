@@ -17,15 +17,19 @@ Env vars (set as GitHub Actions secrets or in a local .env export):
 """
 import json
 import os
+import email as email_lib
+import imaplib
 import re
 import smtplib
 import ssl
 from urllib.parse import quote_plus
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html.parser import HTMLParser
 from pathlib import Path
 
 import requests
@@ -173,6 +177,7 @@ def fetch_adzuna(query: str, country: str, location: str, app_id: str, app_key: 
             "job_city": (it.get("location") or {}).get("display_name"),
             "job_description": clean(it.get("description")),
             "job_publisher": "Adzuna",
+            "job_posted_at_datetime_utc": it.get("created"),
             "job_apply_link": link,
             "apply_options": [{"publisher": "Adzuna", "apply_link": link, "is_direct": False}],
         })
@@ -216,6 +221,7 @@ def fetch_serpapi(query: str, country: str, location: str, key: str) -> list[dic
             "job_apply_link": (opts[0]["apply_link"] if opts else None) or it.get("share_link"),
             "apply_options": opts,
             "job_google_link": it.get("share_link"),
+            "job_posted_text": (it.get("detected_extensions") or {}).get("posted_at"),
         })
     return jobs
 
@@ -248,6 +254,220 @@ def requires_coding(title: str, text: str) -> bool:
     return any(p.search(text) for p in CODING_PATTERNS)
 
 
+# ---------------------------------------------------------------------------
+# Expired / closed / unreachable listings
+#  * MAX_AGE_DAYS: drop postings older than this (and anything whose own expiry date has passed)
+#  * AVOID_PUBLISHERS: re-post aggregators that keep dead or country-blocked listings online; jobs that are
+#    ONLY available through them are dropped, and they are never used as the main apply link.
+#    Add more with the env var AVOID_PUBLISHERS="site1,site2"
+#  * CHECK_LINKS: open each apply link before e-mailing and drop jobs whose page says the job is closed
+# ---------------------------------------------------------------------------
+MAX_AGE_DAYS = int(os.getenv("MAX_AGE_DAYS", "10"))
+CHECK_LINKS = os.getenv("CHECK_LINKS", "1") == "1"
+AVOID_PUBLISHERS = [x.strip().lower() for x in
+                    ("jooble,jobleads,jobrapido,bebee,jobilize,drlogy," + os.getenv("AVOID_PUBLISHERS", "")).split(",") if x.strip()]
+CLOSED_PHRASES = (
+    "no longer available", "no longer accepting", "no longer open", "position has been filled", "job has expired",
+    "this job has expired", "job is no longer", "has been closed", "vacancy has closed", "posting has expired",
+    "this position is closed", "this job is closed", "no longer active", "expired job", "position is no longer",
+    "role is no longer", "this job posting is no longer", "this vacancy is no longer", "job posting has been removed",
+    "this position has been filled", "applications are closed", "page not found",
+)
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/124.0 Safari/537.36")
+
+
+def _parse_dt(v):
+    try:
+        dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def posted_dt(job: dict):
+    dt = _parse_dt(job.get("job_posted_at_datetime_utc")) if job.get("job_posted_at_datetime_utc") else None
+    if dt:
+        return dt
+    txt = (job.get("job_posted_text") or "").lower()
+    now = datetime.now(timezone.utc)
+    m = re.search(r"(\d+)\s*\+?\s*(hour|day|week|month)", txt)
+    if m:
+        days = int(m.group(1)) * {"hour": 0, "day": 1, "week": 7, "month": 30}[m.group(2)]
+        return now - timedelta(days=days)
+    return now if ("today" in txt or "just posted" in txt) else None
+
+
+def is_stale(job: dict) -> bool:
+    now = datetime.now(timezone.utc)
+    exp = _parse_dt(job.get("job_offer_expiration_datetime_utc")) if job.get("job_offer_expiration_datetime_utc") else None
+    if exp and exp < now:
+        return True
+    pd = posted_dt(job)
+    return bool(pd and (now - pd).days > MAX_AGE_DAYS)
+
+
+def avoided(name) -> bool:
+    return any(a in (name or "").lower() for a in AVOID_PUBLISHERS)
+
+
+def aggregator_only(job: dict) -> bool:
+    pubs = [o.get("publisher") for o in (job.get("apply_options") or [])] or \
+           ([job.get("job_publisher")] if job.get("job_publisher") else [])
+    return bool(pubs) and all(avoided(p) for p in pubs)
+
+
+def link_status(url: str) -> str:
+    """'dead' only on clear signals (404/410 or a 'job closed' message). Bot-blocked pages (403/429/login walls) are 'unknown'."""
+    if not url or "google." in url:
+        return "unknown"
+    try:
+        r = requests.get(url, headers={"User-Agent": BROWSER_UA, "Accept-Language": "en"}, timeout=12,
+                         allow_redirects=True, stream=True)
+        if r.status_code in (404, 410):
+            return "dead"
+        if r.status_code >= 400:
+            return "unknown"
+        body = r.raw.read(150000, decode_content=True).decode("utf-8", "ignore").lower()
+        return "dead" if any(p in body for p in CLOSED_PHRASES) else "ok"
+    except Exception:
+        return "unknown"
+
+
+def candidate_links(job: dict) -> list[str]:
+    main, _ = apply_links(job)
+    out = [main] if main else []
+    for o in (job.get("apply_options") or [])[:4]:
+        if o.get("apply_link") and o["apply_link"] not in out and not avoided(o.get("publisher")):
+            out.append(o["apply_link"])
+    return out[:3]
+
+
+def drop_dead(items: list[dict], st: dict) -> list[dict]:
+    if not CHECK_LINKS or not items:
+        return items
+
+    def verdict(c):
+        states = [link_status(u) for u in candidate_links(c["job"])]
+        return "dead" if states and all(x == "dead" for x in states) else "ok"
+
+    with ThreadPoolExecutor(8) as ex:
+        verdicts = list(ex.map(verdict, items))
+    keep = []
+    for c, v in zip(items, verdicts):
+        if v == "dead":
+            st["stale"] += 1
+        else:
+            keep.append(c)
+    return keep
+
+
+# ---------------------------------------------------------------------------
+# Job-alert e-mails (LinkedIn / Naukri / Indeed) read from your own Gmail inbox over IMAP.
+# Set up the alerts on those sites, enable IMAP in Gmail, and set READ_JOB_ALERTS=1.
+# The e-mails only contain title, company, location and a link (no description), so these jobs are listed
+# separately and are not skill-scored.
+# ---------------------------------------------------------------------------
+ALERT_DAYS = int(os.getenv("ALERT_DAYS", "3"))
+ALERT_SOURCES = {          # sender domain -> (name, regex that finds the job id in a link)
+    "linkedin.com": ("LinkedIn", re.compile(r"linkedin\.com/(?:comm/)?jobs/view/(?:[^/?\"']*?-)?(\d{6,})")),
+    "naukri.com": ("Naukri", re.compile(r"naukri\.com/(job-listings[^?\s\"'<>]+)")),
+    "indeed.com": ("Indeed", re.compile(r"indeed\.com/[^\"'<>\s]*?(?:jk=|/job/)([0-9a-zA-Z]+)")),
+}
+
+
+class _AlertParser(HTMLParser):
+    def __init__(self, rx):
+        super().__init__()
+        self.rx, self.items, self._seen, self._cur, self._href, self._txt = rx, [], set(), None, None, []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            href = dict(attrs).get("href") or ""
+            m = self.rx.search(href)
+            self._href, self._txt = ((href, m.group(1)) if m else None), []
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._href:
+            title = " ".join(self._txt).strip()
+            href, jid = self._href
+            if len(title) > 3 and jid not in self._seen:
+                self._seen.add(jid)
+                self._cur = {"title": title, "href": href, "id": jid, "lines": []}
+                self.items.append(self._cur)
+            self._href = None
+
+    def handle_data(self, data):
+        t = " ".join(data.split())
+        if not t:
+            return
+        if self._href is not None:
+            self._txt.append(t)
+        elif self._cur is not None and len(self._cur["lines"]) < 3:
+            self._cur["lines"].append(t)
+
+
+def parse_alert_html(html: str, source: str, rx) -> list[dict]:
+    parser = _AlertParser(rx)
+    parser.feed(html)
+    jobs = []
+    for it in parser.items:
+        lines = [l for l in it["lines"] if l.lower() not in ("new", "easy apply", "actively recruiting", "view job")]
+        company, loc = (lines[0] if lines else ""), (lines[1] if len(lines) > 1 else "")
+        if " \u00b7 " in company and not loc:
+            company, loc = [x.strip() for x in company.split(" \u00b7 ", 1)]
+        link = it["href"]
+        if source == "LinkedIn":
+            link = f"https://www.linkedin.com/jobs/view/{it['id']}/"
+        jobs.append({"job_id": f"alert-{source}-{it['id']}", "job_title": it["title"], "employer_name": company,
+                     "job_city": loc, "job_publisher": source, "job_apply_link": link,
+                     "apply_options": [{"publisher": source, "apply_link": link, "is_direct": False}], "from_alert": True})
+    return jobs
+
+
+def fetch_alert_jobs(user: str, pw: str) -> list[dict]:
+    since = (datetime.now(IST) - timedelta(days=ALERT_DAYS)).strftime("%d-%b-%Y")
+    M = imaplib.IMAP4_SSL("imap.gmail.com")
+    M.login(user, pw.replace(" ", ""))
+    M.select("INBOX", readonly=True)            # read-only: your mail is never marked as read or changed
+    jobs = []
+    try:
+        for domain, (source, rx) in ALERT_SOURCES.items():
+            typ, data = M.search(None, "SINCE", since, "FROM", domain)
+            for num in (data[0].split() if data and data[0] else [])[-25:]:
+                typ, md = M.fetch(num, "(RFC822)")
+                msg = email_lib.message_from_bytes(md[0][1])
+                for part in msg.walk():
+                    if part.get_content_type() == "text/html":
+                        html = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", "ignore")
+                        jobs += parse_alert_html(html, source, rx)
+    finally:
+        try:
+            M.logout()
+        except Exception:
+            pass
+    return jobs
+
+
+ALERT_NEGATIVE_TITLE = ("data ", "sap ", "salesforce", "servicenow", "workday", "erp", "crm", "machine learning", "network security")
+
+
+def alert_job_ok(job: dict) -> bool:
+    title = (job.get("job_title") or "").lower()
+    if "architect" not in title or any(w in title for w in ALERT_NEGATIVE_TITLE):
+        return False
+    if alert_rank(job) == 0 and "solution" not in title:
+        return False
+    if any(w in title for w in CODING_TITLE_WORDS) or any(w in title for w in ("junior", "intern", "graduate", "trainee")):
+        return False
+    return True
+
+
+def alert_rank(job: dict) -> int:
+    t = (job.get("job_title") or "").lower()
+    return sum(w in t for w in ("azure", "cloud", "infrastructure", "platform", "migration", "enterprise"))
+
+
 def job_text(job: dict) -> str:
     return " ".join(
         str(x or "") for x in (
@@ -272,6 +492,10 @@ def visa_snippet(text: str) -> str:
 
 def analyse(job: dict, needs_visa: bool):
     """Returns a dict if the job passes, otherwise a short string saying why it was dropped."""
+    if is_stale(job):
+        return "expired"
+    if aggregator_only(job):
+        return "low_quality_link"
     text = job_text(job)
 
     title = (job.get("job_title") or "").lower()
@@ -447,14 +671,15 @@ def job_board_links(label: str) -> str:
 
 def apply_links(job: dict) -> tuple[str, str]:
     """Pick the best main link and build a line of alternative links.
-    Some job boards block visitors from other countries ("not available in your country"),
-    so we prefer the employer's own page and always offer alternatives."""
-    options = job.get("apply_options") or []
-    direct = [o for o in options if o.get("is_direct") and o.get("apply_link")]
-    main = (direct[0]["apply_link"] if direct else None) or job.get("job_apply_link") or \
-        (options[0]["apply_link"] if options else "")
+    Preference: the employer's own page, then normal job boards. Re-post aggregators (AVOID_PUBLISHERS) are skipped
+    because they often keep closed or country-blocked listings online."""
+    options = [o for o in (job.get("apply_options") or []) if o.get("apply_link")]
+    good = [o for o in options if not avoided(o.get("publisher"))]
+    pool = good or options
+    direct = [o for o in pool if o.get("is_direct")]
+    main = (direct[0]["apply_link"] if direct else None) or (pool[0]["apply_link"] if pool else None) or job.get("job_apply_link") or ""
     alts, used = [], {main}
-    for o in options:
+    for o in good:
         link = o.get("apply_link")
         if link and link not in used:
             used.add(link)
@@ -468,34 +693,8 @@ def apply_links(job: dict) -> tuple[str, str]:
     return main, " &middot; ".join(alts)
 
 
-def badge(score: int) -> str:
-    color = "#0a7d32" if score >= BEST_SCORE else "#c77700" if score >= 70 else "#777"
-    label = f"{score}% match" + (" &middot; BEST MATCH" if score >= BEST_SCORE else "")
-    return (f"<span style='background:{color};color:#fff;padding:1px 8px;border-radius:10px;"
-            f"font-size:12px;font-weight:600;white-space:nowrap'>{label}</span>")
-
-
-def render_job(j: dict, show_country: bool = False) -> str:
-    job, a = j["job"], j["analysis"]
-    loc = ", ".join(x for x in (job.get("job_city"), job.get("job_state"), job.get("job_country")) if x)
-    main_link, alt_links = apply_links(job)
-    h = (
-        "<div style='margin:0 0 14px'>"
-        f"<a href='{main_link}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a> {badge(a['score'])}<br>"
-        f"<span>{('<b>' + j['label'] + '</b> &middot; ') if show_country and j.get('label') else ''}{job.get('employer_name')} &middot; {loc} &middot; via {job.get('job_publisher') or 'web'}</span><br>"
-        f"<span style='color:#0a6'>Skills matched ({len(a['matched'])}): {', '.join(a['matched'][:10]) or 'none found in the text'}</span>"
-    )
-    h += f"<br><span style='font-size:11px;color:#999'>Score: {a['breakdown']}</span>"
-    if a.get("unconfirmed"):
-        h += "<br><span style='color:#b60'><i>Sponsorship not mentioned in the posting - check with the recruiter.</i></span>"
-    if a["visa_signal"]:
-        h += f"<br><span style='color:#555'><i>Visa/relocation note:</i> ...{a['visa_signal']}...</span>"
-    h += f"<br><span style='font-size:12px;color:#555'>Link blocked or \"not available in your country\"? Try: {alt_links}</span></div>"
-    return h
-
-
 def build_email(results: dict, errors: list[str], stats: dict | None = None,
-                others: dict | None = None) -> tuple[str, str]:
+                others: dict | None = None, alerts: list[dict] | None = None) -> tuple[str, str]:
     today = datetime.now(IST).strftime("%a %d %b %Y")
     others = others or {}
     best = sorted(
@@ -522,6 +721,16 @@ def build_email(results: dict, errors: list[str], stats: dict | None = None,
         parts.append("<h3 style='border-bottom:2px solid #0a7d32;padding-bottom:4px;color:#0a7d32'>"
                      f"Best matches ({BEST_SCORE}+)</h3>")
         parts.extend(render_job(j, True) for j in best)
+    if alerts:
+        parts.append("<h3 style='border-bottom:1px solid #ddd;padding-bottom:4px'>"
+                     f"From your job-alert e-mails ({len(alerts)})</h3>"
+                     "<p style='color:#777;font-size:12px;margin:0 0 6px'>LinkedIn / Naukri / Indeed alert e-mails contain no job description, "
+                     "so these are not scored. Open the link to check the details and the closing date.</p>")
+        for j in alerts:
+            parts.append("<div style='margin:0 0 10px'>"
+                         f"<a href='{j['job_apply_link']}' style='font-size:15px;font-weight:600'>{j['job_title']}</a> "
+                         f"<span style='background:#0a66c2;color:#fff;padding:1px 7px;border-radius:10px;font-size:11px'>{j['job_publisher']}</span><br>"
+                         f"<span>{j.get('employer_name') or ''}{' &middot; ' + j['job_city'] if j.get('job_city') else ''}</span></div>")
     for label, jobs in results.items():
         extra = (others or {}).get(label, [])
         bc = sum(1 for j in best if j.get("label") == label)
@@ -533,7 +742,7 @@ def build_email(results: dict, errors: list[str], stats: dict | None = None,
                 "<p style='color:#888;font-size:12px;margin:0 0 6px'>Search funnel: "
                 f"fetched {st['fetched']} &rarr; Azure architect-type titles {st['title_ok']} "
                 f"&rarr; enough resume skills {st['skills_ok']} &rarr; passed visa rule {st['visa_ok']} "
-                f"(dropped for coding/developer requirements: {st['coding']}; already sent before: {st['seen']})</p>")
+                f"(dropped as expired / closed / aggregator-only: {st['stale']}; coding/developer requirements: {st['coding']}; already sent before: {st['seen']})</p>")
         if not jobs:
             parts.append("<p style='color:#888'>" + ("This country's top jobs are listed under Best matches above." if bc else "No new good matches today.") + "</p>")
         parts.extend(render_job(j) for j in jobs)
@@ -597,12 +806,18 @@ def main() -> int:
     # IGNORE_SEEN=true (manual "Run workflow" checkbox) re-sends jobs that were already emailed
     seen = {} if os.getenv("IGNORE_SEEN", "").lower() == "true" else load_seen()
     now = datetime.now(IST).isoformat()
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    # Backup schedule: GitHub sometimes delays or drops a scheduled run. A second scheduled run later in the
+    # morning sends the digest only if today's first run did not already send it.
+    if os.getenv("SKIP_IF_SENT_TODAY") == "1" and seen.get("__digest_sent__") == today:
+        print("Today's digest was already sent - skipping this backup run.")
+        return 0
     results, others, stats, errors = {}, {}, {}, []
     failed_countries = 0
 
     for label, cc, loc, needs_visa in TARGETS:
         collected, extra, ids = [], [], set()
-        st = {"fetched": 0, "title_ok": 0, "skills_ok": 0, "visa_ok": 0, "seen": 0, "coding": 0}
+        st = {"fetched": 0, "title_ok": 0, "skills_ok": 0, "visa_ok": 0, "seen": 0, "coding": 0, "stale": 0}
         sources_ok = 0
         for q in todays_queries():
             fetchers = []
@@ -635,6 +850,8 @@ def main() -> int:
                 if isinstance(a, str):
                     if a == "coding":
                         st["coding"] += 1
+                    if a in ("expired", "low_quality_link"):
+                        st["stale"] += 1
                     if a in ("skills", "visa_negative", "no_visa_mention", "coding"):
                         st["title_ok"] += 1
                     if a in ("visa_negative", "no_visa_mention"):
@@ -654,6 +871,7 @@ def main() -> int:
                 if not a["unconfirmed"]:
                     st["visa_ok"] += 1
                 collected.append({"job": job, "analysis": a})
+        collected, extra = drop_dead(collected, st), drop_dead(extra, st)     # remove closed / expired listings
         if sources_ok == 0:
             failed_countries += 1
         confirmed = [c for c in collected if not c["analysis"]["unconfirmed"]]
@@ -676,7 +894,26 @@ def main() -> int:
             for lab in results for c in results[lab] + others[lab]]
     Path(os.getenv("SCORED_JOBS", "scored_jobs.json")).write_text(json.dumps(dump, default=str))
 
-    subject, html = build_email(results, errors, stats, others)
+    alerts = []
+    if os.getenv("READ_JOB_ALERTS") == "1" and os.getenv("SMTP_USER") and os.getenv("SMTP_PASS"):
+        try:
+            seen_titles = set()
+            for j in fetch_alert_jobs(os.environ["SMTP_USER"].strip(), os.environ["SMTP_PASS"]):
+                jid, dk = job_id(j), dedupe_key(j)
+                if jid in seen or dk in seen or dk in seen_titles or not alert_job_ok(j):
+                    continue
+                seen_titles.add(dk)
+                alerts.append(j)
+            alerts.sort(key=alert_rank, reverse=True)
+            alerts = alerts[:30]
+            for j in alerts:
+                seen[job_id(j)] = now
+                seen[dedupe_key(j)] = now
+        except Exception as e:
+            errors.append("Gmail job alerts: " + str(e)[:150] +
+                          " (check that IMAP is enabled in Gmail settings > Forwarding and POP/IMAP, and that SMTP_PASS is an App Password)")
+
+    subject, html = build_email(results, errors, stats, others, alerts)
     subject += f" | search: {', '.join(todays_queries())}"
     if os.getenv("DRY_RUN"):
         Path("preview.html").write_text(html)
@@ -684,6 +921,7 @@ def main() -> int:
     else:
         send_email(subject, html)
         print("Sent:", subject)
+        seen["__digest_sent__"] = today
     save_seen(seen)
     if failed_countries == len(TARGETS):
         print("All searches failed:", errors[0] if errors else "unknown")
