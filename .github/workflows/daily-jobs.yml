@@ -2,7 +2,8 @@ name: Daily Azure job digest
 
 on:
   schedule:
-    - cron: "30 4 * * 1,2,3"   # 04:30 UTC = 10:00 AM IST, Mon-Fri (change 1-5 to * for every day)
+    - cron: "20 4 * * 1-5"   # 09:50 AM IST Mon-Fri (GitHub often starts runs a few minutes late, so mail lands about 10:00)
+    - cron: "50 5 * * 1-5"   # 11:20 AM IST backup: only sends if the first run was dropped or failed
   workflow_dispatch:
     inputs:
       ignore_seen:
@@ -38,6 +39,8 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           IGNORE_SEEN: ${{ inputs.ignore_seen }}
+          SKIP_IF_SENT_TODAY: ${{ github.event_name == 'schedule' && '1' || '0' }}
+          READ_JOB_ALERTS: "1"   # read LinkedIn / Naukri / Indeed job-alert e-mails from your Gmail (needs IMAP enabled)
           SHOW_UNCONFIRMED: "1"   # also list strong matches that do not mention sponsorship (set "0" for strict)
         run: python job_agent.py
 
