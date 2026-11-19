@@ -86,6 +86,9 @@ SKILLS = [
     # IaC & DevOps
     "terraform", "arm template", "bicep", "powershell", "azure devops", "ci/cd",
     "infrastructure as code", "iac", "automation",
+    # AI-assisted engineering (not production AI architecture)
+    "github copilot", "copilot", "chatgpt", "claude", "ai-assisted engineering", "ai assisted engineering",
+    "human-in-the-loop", "human in the loop", "ai-assisted automation",
     # certifications
     "az-305", "az-104", "az-700",
 ]
@@ -535,7 +538,7 @@ CORE_SKILLS = {
     "landing zone", "cloud adoption framework", "well-architected", "azure policy", "management group",
     "rbac", "azure firewall", "firewall policy", "microsoft entra id", "entra id", "managed identities", "conditional access", "pim", "governance", "terraform", "aks", "azure kubernetes service", "expressroute", "virtual wan", "private link", "azure migrate",
     "site recovery", "azure devops", "powershell", "arm template", "vpn gateway", "hub and spoke",
-    "hld", "lld", "defender for cloud",
+    "hld", "lld", "defender for cloud", "github copilot", "copilot", "chatgpt", "claude", "ai-assisted engineering",
 }
 
 
