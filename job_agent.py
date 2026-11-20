@@ -25,6 +25,7 @@ import ssl
 from urllib.parse import quote_plus
 import sys
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
@@ -470,6 +471,73 @@ def alert_rank(job: dict) -> int:
     return sum(w in t for w in ("azure", "cloud", "infrastructure", "platform", "migration", "enterprise"))
 
 
+# ---------------------------------------------------------------------------
+# Skills-gap report: which skills do the architect jobs ask for that are NOT in your profile (master_resume.json)?
+# (name, words that mean the job asks for it, short tip)
+# ---------------------------------------------------------------------------
+SKILL_VOCAB = [
+    ("Azure Firewall / NSGs", ["azure firewall", "nsg", "network security group"], "add if you have configured them; else study AZ-700 firewall labs"),
+    ("Hub-and-spoke network design", ["hub and spoke", "hub-and-spoke", "hub & spoke"], "usually part of landing zones: describe it if you built one"),
+    ("Application Gateway / Front Door / WAF", ["application gateway", "front door"], "common in networking roles; add if used"),
+    ("Azure Monitor / Log Analytics", ["azure monitor", "log analytics"], "very common ask; add if you built monitoring or alerts"),
+    ("Microsoft Sentinel / SIEM", ["sentinel", "siem"], "SC-200 or the Sentinel labs"),
+    ("Microsoft Entra ID / Conditional Access / PIM", ["entra", "azure ad", "azure active directory", "conditional access", "privileged identity"], "add if you handled identity; SC-300 helps"),
+    ("Zero Trust", ["zero trust"], "describe it if your designs followed it; SC-100 covers it"),
+    ("GitHub Actions", ["github actions"], "quick win: build a Terraform or Bicep pipeline in Actions"),
+    ("Ansible", ["ansible"], "small lab: configure VMs with Ansible"),
+    ("Docker / containers", ["docker"], "basic Docker plus an AKS project"),
+    ("Helm / GitOps", ["helm", "gitops", "argocd", "argo cd", "flux"], "extend your AKS project with GitOps"),
+    ("AWS", ["aws", "amazon web services"], "AWS Solutions Architect Associate"),
+    ("Google Cloud (GCP)", ["gcp", "google cloud"], "lower priority than AWS"),
+    ("Oracle Cloud (OCI)", ["oci", "oracle cloud"], "only if you target Oracle-heavy employers"),
+    ("Azure Arc", ["azure arc"], "hybrid management; short Microsoft Learn path"),
+    ("Azure Virtual Desktop / Citrix", ["virtual desktop", "avd", "citrix"], "add if you deployed AVD"),
+    ("VMware / Azure VMware Solution", ["vmware", "azure vmware"], "add if you migrated from VMware"),
+    ("Azure Stack HCI", ["stack hci"], "niche: only if you target hybrid roles"),
+    ("Azure SQL / databases", ["azure sql", "sql managed instance", "cosmos db", "postgresql"], "know the database landing options"),
+    ("Azure Functions / serverless / Logic Apps", ["azure functions", "serverless", "logic apps"], "know the integration options"),
+    ("API Management / messaging", ["api management", "apim", "service bus", "event hub"], "know the integration options"),
+    ("Data platform (Databricks / Synapse / Fabric)", ["databricks", "synapse", "data factory", "microsoft fabric"], "only for data-platform roles"),
+    ("Azure OpenAI / AI Foundry", ["azure openai", "ai foundry", "openai"], "landing zone and governance for AI workloads"),
+    ("FinOps", ["finops"], "FinOps Foundation certification; you already have cost-optimisation work to show"),
+    ("Compliance frameworks (ISO 27001 / SOC 2 / GDPR)", ["iso 27001", "soc 2", "soc2", "gdpr", "hipaa", "pci"], "add the frameworks you have worked with"),
+    ("ITIL", ["itil"], "ITIL 4 Foundation is quick to earn"),
+    ("TOGAF / enterprise architecture frameworks", ["togaf"], "TOGAF certification"),
+    ("DevSecOps", ["devsecops"], "pipeline security scanning and policy as code"),
+    ("Azure Verified Modules / Landing Zone Accelerator", ["azure verified modules", "landing zone accelerator", "policy as code"], "you build landing zones: name the accelerator you used"),
+    ("Observability tools (Datadog / Splunk / Grafana / Prometheus)", ["datadog", "splunk", "grafana", "prometheus"], "add one you have used"),
+    ("Network vendors (Palo Alto / Fortinet / Cisco / BGP / SD-WAN)", ["palo alto", "fortinet", "check point", "cisco", "sd-wan", "bgp"], "add if you worked with firewalls or routing"),
+    ("Jenkins / GitLab CI", ["jenkins", "gitlab"], "add if you used them besides Azure DevOps"),
+    ("Linux administration", ["linux"], "add if you administer Linux servers"),
+    ("Pre-sales / POCs / RFP responses", ["pre-sales", "presales", "proof of concept", "poc", "rfp", "sizing"], "describe any POCs, estimates or proposals you led"),
+]
+_PROFILE_TEXT = None
+
+
+def profile_text() -> str:
+    """Everything your master_resume.json (plus the built-in skill list) says about you, lower-cased."""
+    global _PROFILE_TEXT
+    if _PROFILE_TEXT is None:
+        try:
+            raw = Path(os.getenv("MASTER_RESUME", "master_resume.json")).read_text(encoding="utf-8").lower()
+        except Exception:
+            raw = ""
+        _PROFILE_TEXT = raw + " " + " ".join(SKILLS)
+    return _PROFILE_TEXT
+
+
+def _has_word(text: str, word: str) -> bool:
+    return re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", text) is not None
+
+
+def missing_skills_in(job: dict) -> list[str]:
+    text, mine, out = job_text(job), profile_text(), []
+    for name, words, _tip in SKILL_VOCAB:
+        if any(_has_word(text, w) for w in words) and not any(_has_word(mine, w) for w in words):
+            out.append(name)
+    return out
+
+
 def job_text(job: dict) -> str:
     return " ".join(
         str(x or "") for x in (
@@ -723,7 +791,8 @@ def render_job(j: dict, show_country: bool = False) -> str:
 
 
 def build_email(results: dict, errors: list[str], stats: dict | None = None,
-                others: dict | None = None, alerts: list[dict] | None = None) -> tuple[str, str]:
+                others: dict | None = None, alerts: list[dict] | None = None,
+                gaps: list | None = None, gap_total: int = 0) -> tuple[str, str]:
     today = datetime.now(IST).strftime("%a %d %b %Y")
     others = others or {}
     best = sorted(
@@ -760,6 +829,14 @@ def build_email(results: dict, errors: list[str], stats: dict | None = None,
                          f"<a href='{j['job_apply_link']}' style='font-size:15px;font-weight:600'>{j['job_title']}</a> "
                          f"<span style='background:#0a66c2;color:#fff;padding:1px 7px;border-radius:10px;font-size:11px'>{j['job_publisher']}</span><br>"
                          f"<span>{j.get('employer_name') or ''}{' &middot; ' + j['job_city'] if j.get('job_city') else ''}</span></div>")
+    if gaps:
+        parts.append("<h3 style='border-bottom:2px solid #c77700;padding-bottom:4px;color:#c77700'>Skills in demand that are missing from your profile</h3>"
+                     f"<p style='color:#777;font-size:12px;margin:0 0 6px'>From {gap_total} architect-type jobs seen in this run (including ones sent earlier). "
+                     "Add a skill to your resume only if you really have it (put it in master_resume.json); otherwise treat it as a learning target.</p>")
+        for name, count, tip in gaps:
+            pct = round(100 * count / max(1, gap_total))
+            parts.append(f"<div style='margin:0 0 5px'>&bull; <b>{name}</b> &ndash; asked in {count} of {gap_total} jobs ({pct}%) "
+                         f"<span style='color:#777;font-size:12px'>&middot; {tip}</span></div>")
     for label, jobs in results.items():
         extra = (others or {}).get(label, [])
         bc = sum(1 for j in best if j.get("label") == label)
@@ -843,6 +920,7 @@ def main() -> int:
         return 0
     results, others, stats, errors = {}, {}, {}, []
     failed_countries = 0
+    demand = Counter()                       # skills the jobs ask for that are missing from your profile
 
     for label, cc, loc, needs_visa in TARGETS:
         collected, extra, ids = [], [], set()
@@ -870,10 +948,14 @@ def main() -> int:
                     continue
                 ids.update((jid, dk))
                 st["fetched"] += 1
+                a = analyse(job, needs_visa)
+                if isinstance(a, dict) or a in ("skills", "visa_negative", "no_visa_mention"):
+                    demand["_jobs"] += 1                         # a relevant (architect-type, non-coding, fresh) job
+                    for nm in missing_skills_in(job):
+                        demand[nm] += 1
                 if jid in seen or dk in seen:
                     st["seen"] += 1
                     continue
-                a = analyse(job, needs_visa)
                 if isinstance(a, dict):
                     a.update(score_job(job, a, needs_visa))
                 if isinstance(a, str):
@@ -942,7 +1024,9 @@ def main() -> int:
             errors.append("Gmail job alerts: " + str(e)[:150] +
                           " (check that IMAP is enabled in Gmail settings > Forwarding and POP/IMAP, and that SMTP_PASS is an App Password)")
 
-    subject, html = build_email(results, errors, stats, others, alerts)
+    gaps = [(n, demand[n], t) for n, _w, t in SKILL_VOCAB if demand[n] >= 2]
+    gaps.sort(key=lambda x: x[1], reverse=True)
+    subject, html = build_email(results, errors, stats, others, alerts, gaps[:10], demand["_jobs"])
     subject += f" | search: {', '.join(todays_queries())}"
     if os.getenv("DRY_RUN"):
         Path("preview.html").write_text(html)
