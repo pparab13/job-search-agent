@@ -72,11 +72,9 @@ SKILLS = [
     # landing zone / frameworks / governance
     "landing zone", "cloud adoption framework", "caf", "well-architected", "waf",
     "azure policy", "management group", "rbac", "resource lock", "governance",
-    "defender for cloud", "azure firewall", "firewall policy", "microsoft entra id", "entra id", "azure ad",
-    "managed identities", "conditional access", "privileged identity management", "pim", "identity governance",
-    "compliance", "cost optimi",
+    "defender for cloud", "compliance", "cost optimi",
     # compute & containers
-    "aks", "azure kubernetes service", "kubernetes", "node pools", "cluster autoscaler", "ingress", "container", "app service", "azure vm",
+    "aks", "kubernetes", "container", "app service", "azure vm",
     # networking
     "vnet", "virtual network", "vpn gateway", "load balancer", "expressroute",
     "virtual wan", "private link", "hybrid connectivity", "network segmentation", "hub and spoke",
@@ -86,9 +84,8 @@ SKILLS = [
     # IaC & DevOps
     "terraform", "arm template", "bicep", "powershell", "azure devops", "ci/cd",
     "infrastructure as code", "iac", "automation",
-    # AI-assisted engineering (not production AI architecture)
-    "github copilot", "copilot", "chatgpt", "claude", "ai-assisted engineering", "ai assisted engineering",
-    "human-in-the-loop", "human in the loop", "ai-assisted automation",
+    # AI-assisted engineering
+    "github copilot", "generative ai", "genai", "chatgpt", "ai-assisted", "ai governance",
     # certifications
     "az-305", "az-104", "az-700",
 ]
@@ -536,9 +533,9 @@ def analyse(job: dict, needs_visa: bool):
 # Skills that matter most for you count double in the match score
 CORE_SKILLS = {
     "landing zone", "cloud adoption framework", "well-architected", "azure policy", "management group",
-    "rbac", "azure firewall", "firewall policy", "microsoft entra id", "entra id", "managed identities", "conditional access", "pim", "governance", "terraform", "aks", "azure kubernetes service", "expressroute", "virtual wan", "private link", "azure migrate",
+    "rbac", "terraform", "aks", "expressroute", "virtual wan", "private link", "azure migrate",
     "site recovery", "azure devops", "powershell", "arm template", "vpn gateway", "hub and spoke",
-    "hld", "lld", "defender for cloud", "github copilot", "copilot", "chatgpt", "claude", "ai-assisted engineering",
+    "hld", "lld", "defender for cloud",
 }
 
 
@@ -696,6 +693,33 @@ def apply_links(job: dict) -> tuple[str, str]:
     q = quote_plus(f"{job.get('job_title', '')} {job.get('employer_name', '')}")
     alts.append(f"<a href='https://www.google.com/search?q={q}'>Find on Google</a>")
     return main, " &middot; ".join(alts)
+
+
+def badge(score: int) -> str:
+    color = "#0a7d32" if score >= BEST_SCORE else "#c77700" if score >= 70 else "#777"
+    label = f"{score}% match" + (" &middot; BEST MATCH" if score >= BEST_SCORE else "")
+    return (f"<span style='background:{color};color:#fff;padding:1px 8px;border-radius:10px;"
+            f"font-size:12px;font-weight:600;white-space:nowrap'>{label}</span>")
+
+
+def render_job(j: dict, show_country: bool = False) -> str:
+    job, a = j["job"], j["analysis"]
+    loc = ", ".join(x for x in (job.get("job_city"), job.get("job_state"), job.get("job_country")) if x)
+    main_link, alt_links = apply_links(job)
+    tag = ("<b>" + j["label"] + "</b> &middot; ") if show_country and j.get("label") else ""
+    h = (
+        "<div style='margin:0 0 14px'>"
+        f"<a href='{main_link}' style='font-size:15px;font-weight:600'>{job.get('job_title')}</a> {badge(a['score'])}<br>"
+        f"<span>{tag}{job.get('employer_name')} &middot; {loc} &middot; via {job.get('job_publisher') or 'web'}</span><br>"
+        f"<span style='color:#0a6'>Skills matched ({len(a['matched'])}): {', '.join(a['matched'][:10]) or 'none found in the text'}</span>"
+    )
+    h += f"<br><span style='font-size:11px;color:#999'>Score: {a['breakdown']}</span>"
+    if a.get("unconfirmed"):
+        h += "<br><span style='color:#b60'><i>Sponsorship not mentioned in the posting - check with the recruiter.</i></span>"
+    if a["visa_signal"]:
+        h += f"<br><span style='color:#555'><i>Visa/relocation note:</i> ...{a['visa_signal']}...</span>"
+    h += f"<br><span style='font-size:12px;color:#555'>Link blocked or \"not available in your country\"? Try: {alt_links}</span></div>"
+    return h
 
 
 def build_email(results: dict, errors: list[str], stats: dict | None = None,
