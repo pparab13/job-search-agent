@@ -158,7 +158,8 @@ STRICT RULES
 3. Every bullet must cite the id of the master bullet it comes from ("source"). Every number you write must appear in MASTER_RESUME.
 4. "skills" must be chosen from MASTER_RESUME.skills, spelled exactly as written there.
 5. Write in {rules['spelling']}. Plain, specific, no buzzword padding, no first-person pronouns in bullets.
-6. Return ONE JSON object and nothing else."""
+6. Bullets marked "pin": true are ALWAYS added to the resume automatically - do not repeat them in "roles".
+7. Return ONE JSON object and nothing else."""
     user = f"""COUNTRY STANDARD: {rules['doc']} for {rules['country']}, target length {rules['pages']}.
 Bullets: at most {rules['bullets'][0]} for each of the two most recent roles, at most {rules['bullets'][1]} for other roles.
 Cover letter: 3 paragraphs, about {rules['letter_words']} words in total, specific to the company and role. Do NOT mention visas
@@ -172,7 +173,7 @@ Description:
 {(job.get('job_description') or '')[:7000]}
 
 MASTER_RESUME
-{json.dumps({k: master[k] for k in ('summary_base', 'skills', 'achievements', 'experience', 'certifications')}, ensure_ascii=False)}
+{json.dumps({k: master[k] for k in ('summary_base', 'skills', 'achievements', 'experience', 'certifications') if k in master}, ensure_ascii=False)}
 
 Return JSON with exactly these keys:
 {{
@@ -237,17 +238,22 @@ def validate(t: dict, master: dict, rules: dict) -> tuple[dict, list[str]]:
     clean["roles"] = {}
     for idx, e in enumerate([e for e in master["experience"] if e["tier"] == "main"]):
         cap = rules["bullets"][0] if idx < 2 else rules["bullets"][1]
+        pinned = [b for b in e["bullets"] if b.get("pin")]
+        pin_ids = {b["id"] for b in pinned}
         out = []
         for b in (t.get("roles", {}) or {}).get(e["id"], []) or []:
             src, text = b.get("source"), (b.get("text") or "").strip()
             if src not in by_id or not text:
                 problems.append(f"bullet without a valid source removed ({e['id']})")
                 continue
+            if src in pin_ids:
+                continue                                    # pinned bullets are added below, verbatim
             if bad_numbers(text, allowed):
                 problems.append(f"bullet had numbers not in your resume, replaced with original ({src})")
                 text = by_id[src]
             out.append(text)
-        clean["roles"][e["id"]] = out[:cap] or [b["text"] for b in e["bullets"]][:cap]
+        base = out[:cap] or [b["text"] for b in e["bullets"] if not b.get("pin")][:cap]
+        clean["roles"][e["id"]] = base + [b["text"] for b in pinned]      # your pinned bullets always appear
 
     paras = [str(p).strip() for p in t.get("cover_letter", []) if str(p).strip()][:4]
     fixed = [drop_bad_sentences(p, allowed) for p in paras]
@@ -374,6 +380,11 @@ def build_resume(master: dict, t: dict, rules: dict, path: Path) -> None:
     ach = {a["id"]: a["text"] for a in master["achievements"]}
     for aid in t["achievement_ids"]:
         bullet(d, ach[aid])
+
+    if master.get("ai_engineering"):
+        heading(d, "AI-Assisted Engineering")
+        for b in master["ai_engineering"]:
+            bullet(d, b["text"])
 
     heading(d, "Professional Experience")
     for e in [x for x in master["experience"] if x["tier"] == "main"]:

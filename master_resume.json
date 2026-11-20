@@ -66,7 +66,14 @@
   "HLD / LLD",
   "Architecture Reviews",
   "Cross-Functional Leadership",
-  "Mentoring"
+  "Mentoring",
+  "Generative AI-Assisted Engineering",
+  "GitHub Copilot",
+  "ChatGPT",
+  "Claude",
+  "Bicep",
+  "Human-in-the-Loop Validation",
+  "AI Governance & Data Privacy"
  ],
  "achievements": [
   {
@@ -131,6 +138,21 @@
     {
      "id": "ltim-8",
      "text": "Drive cloud cost and operational optimization initiatives, including infrastructure standardization and automation, contributing to a reported 15% operating cost reduction."
+    },
+    {
+     "id": "ltim-9",
+     "text": "Leveraged generative AI tools including GitHub Copilot, ChatGPT and Claude to accelerate infrastructure engineering, automation, troubleshooting and technical documentation.",
+     "pin": true
+    },
+    {
+     "id": "ltim-10",
+     "text": "Applied AI-assisted engineering practices across Terraform, Bicep, PowerShell and Azure DevOps workflows.",
+     "pin": true
+    },
+    {
+     "id": "ltim-11",
+     "text": "Established human-in-the-loop validation, security controls, data privacy and governance for AI-assisted workflows.",
+     "pin": true
     }
    ]
   },
